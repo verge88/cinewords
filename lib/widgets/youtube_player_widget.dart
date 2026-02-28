@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
@@ -32,9 +31,6 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
   Timer? _positionTimer;
   bool _isReady = false;
 
-  // Completer for subtitle fetch requests
-  Completer<String>? _subtitleCompleter;
-
   @override
   void didUpdateWidget(covariant YouTubePlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -46,6 +42,8 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
     }
   }
 
+  /// Build the embed URL directly — no HTML wrapper needed for the iframe,
+  /// but we use the IFrame API via an HTML page loaded from youtube.com origin.
   String _buildPlayerHtml() {
     final autoPlay = widget.autoPlay ? 1 : 0;
     final controls = widget.showControls ? 1 : 0;
@@ -54,6 +52,7 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <style>
@@ -72,11 +71,10 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
     firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 
     var player;
-    
+
     function onYouTubeIframeAPIReady() {
       player = new YT.Player('player', {
         videoId: '${widget.videoId}',
-        host: 'https://www.youtube-nocookie.com',
         playerVars: {
           'autoplay': $autoPlay,
           'controls': $controls,
@@ -84,10 +82,11 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
           'rel': 0,
           'playsinline': 1,
           'enablejsapi': 1,
-          'origin': 'https://www.youtube-nocookie.com',
-          'widget_referrer': 'https://www.youtube-nocookie.com',
           'cc_load_policy': 0,
-          'iv_load_policy': 3
+          'iv_load_policy': 3,
+          'fs': 0,
+          // ДОБАВЛЕНО: Явное указание origin помогает обойти ошибку 150/152
+          'origin': 'https://www.youtube.com' 
         },
         events: {
           'onReady': onPlayerReady,
@@ -107,6 +106,7 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
     }
 
     function onPlayerError(event) {
+      console.log('YouTube error code: ' + event.data);
       window.flutter_inappwebview.callHandler('onError', event.data);
     }
 
@@ -135,36 +135,6 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
 
     function loadNewVideo(videoId) {
       if (player && player.loadVideoById) player.loadVideoById(videoId);
-    }
-
-    // ═══════════════════════════════════════════
-    //  Subtitle fetching via XHR (uses browser cookies/session)
-    // ═══════════════════════════════════════════
-    function fetchSubtitleData(url) {
-      return new Promise(function(resolve, reject) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        xhr.onload = function() {
-          if (xhr.status === 200) {
-            resolve(xhr.responseText);
-          } else {
-            resolve('');
-          }
-        };
-        xhr.onerror = function() {
-          resolve('');
-        };
-        xhr.send();
-      });
-    }
-
-    async function downloadSubtitles(url) {
-      try {
-        var text = await fetchSubtitleData(url);
-        window.flutter_inappwebview.callHandler('onSubtitlesLoaded', text);
-      } catch(e) {
-        window.flutter_inappwebview.callHandler('onSubtitlesLoaded', '');
-      }
     }
   </script>
 </body>
@@ -216,30 +186,6 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
     );
   }
 
-  /// Download subtitles via the WebView's XHR (has correct cookies/session)
-  Future<String> fetchSubtitlesViaWebView(String url) async {
-    if (_webController == null || !_isReady) return '';
-
-    _subtitleCompleter = Completer<String>();
-
-    try {
-      await _webController!.evaluateJavascript(
-        source: "downloadSubtitles('${url.replaceAll("'", "\\'")}');",
-      );
-
-      // Wait for the JS callback with a timeout
-      final result = await _subtitleCompleter!.future.timeout(
-        const Duration(seconds: 20),
-        onTimeout: () => '',
-      );
-
-      return result;
-    } catch (e) {
-      debugPrint('[Player] WebView subtitle fetch error: $e');
-      return '';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return InAppWebView(
@@ -249,14 +195,18 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
         iframeAllowFullscreen: true,
         javaScriptEnabled: true,
         transparentBackground: true,
+        // useHybridComposition is important for Android video playback
         useHybridComposition: true,
-        userAgent:
-            'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        // Use a standard desktop user-agent so YouTube serves a full player
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
       ),
+      // KEY FIX: Load HTML with baseUrl set to https://www.youtube.com
+      // This makes the WebView send a proper Referer header to YouTube,
+      // which prevents error 150/152-4.
       initialData: InAppWebViewInitialData(
         data: _buildPlayerHtml(),
-        baseUrl: WebUri('https://www.youtube-nocookie.com'),
+        baseUrl: WebUri('https://www.youtube.com/'),
         encoding: 'utf-8',
         mimeType: 'text/html',
       ),
@@ -290,18 +240,7 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
         controller.addJavaScriptHandler(
           handlerName: 'onError',
           callback: (args) {
-            debugPrint('YouTube Player Error: ${args.firstOrNull}');
-          },
-        );
-
-        // Handler for subtitle data coming back from JS
-        controller.addJavaScriptHandler(
-          handlerName: 'onSubtitlesLoaded',
-          callback: (args) {
-            final data = args.isNotEmpty ? args[0]?.toString() ?? '' : '';
-            if (_subtitleCompleter != null && !_subtitleCompleter!.isCompleted) {
-              _subtitleCompleter!.complete(data);
-            }
+            debugPrint('[YT Player] Error: ${args.firstOrNull}');
           },
         );
       },

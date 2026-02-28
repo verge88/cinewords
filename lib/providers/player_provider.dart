@@ -3,7 +3,6 @@ import '../models/subtitle_line.dart';
 import '../models/video_item.dart';
 import '../services/youtube_service.dart';
 import '../services/supabase_service.dart';
-import '../widgets/youtube_player_widget.dart';
 
 class PlayerProvider extends ChangeNotifier {
   final YouTubeService _ytService = YouTubeService();
@@ -20,9 +19,6 @@ class PlayerProvider extends ChangeNotifier {
   bool _isLoadingSubs = false;
   String? _subtitleError;
 
-  // Reference to WebView player for subtitle fetching
-  GlobalKey<YouTubePlayerWidgetState>? _playerKey;
-
   VideoItem? get currentVideo => _currentVideo;
   List<SubtitleLine> get englishSubs => _englishSubs;
   List<SubtitleLine> get russianSubs => _russianSubs;
@@ -35,18 +31,6 @@ class PlayerProvider extends ChangeNotifier {
   bool get isLoadingSubs => _isLoadingSubs;
   String? get subtitleError => _subtitleError;
 
-  /// Set the player key so we can use its WebView for subtitle fetching
-  void setPlayerKey(GlobalKey<YouTubePlayerWidgetState> key) {
-    _playerKey = key;
-  }
-
-  /// WebView-based subtitle fetcher
-  Future<String> _webViewFetcher(String url) async {
-    final state = _playerKey?.currentState;
-    if (state == null) return '';
-    return state.fetchSubtitlesViaWebView(url);
-  }
-
   Future<void> loadVideo(VideoItem video) async {
     _currentVideo = video;
     _englishSubs = [];
@@ -56,9 +40,6 @@ class PlayerProvider extends ChangeNotifier {
     _subtitleError = null;
     _isLoadingSubs = true;
     notifyListeners();
-
-    // Wait a moment for WebView to initialize
-    await Future.delayed(const Duration(seconds: 2));
 
     // Try Supabase cache first (with short timeout)
     bool cached = false;
@@ -78,7 +59,6 @@ class PlayerProvider extends ChangeNotifier {
           video.youtubeId,
           language: 'en',
           dbVideoId: video.id,
-          webViewFetcher: _playerKey != null ? _webViewFetcher : null,
         );
         debugPrint('[Subs] YouTube EN subs: ${_englishSubs.length}');
         if (_englishSubs.isNotEmpty) {
@@ -113,7 +93,6 @@ class PlayerProvider extends ChangeNotifier {
         video.youtubeId,
         language: 'ru',
         dbVideoId: video.id,
-        webViewFetcher: _playerKey != null ? _webViewFetcher : null,
       );
       debugPrint('[Subs] RU subs: ${_russianSubs.length}');
       if (_russianSubs.isNotEmpty) {
@@ -144,9 +123,20 @@ class PlayerProvider extends ChangeNotifier {
     return null;
   }
 
-  void setPlaying(bool p) { _isPlaying = p; notifyListeners(); }
-  void toggleTranslation() { _showTranslation = !_showTranslation; notifyListeners(); }
-  void setPlaybackSpeed(double s) { _playbackSpeed = s; notifyListeners(); }
+  void setPlaying(bool p) {
+    _isPlaying = p;
+    notifyListeners();
+  }
+
+  void toggleTranslation() {
+    _showTranslation = !_showTranslation;
+    notifyListeners();
+  }
+
+  void setPlaybackSpeed(double s) {
+    _playbackSpeed = s;
+    notifyListeners();
+  }
 
   Duration? seekToLine(int index) {
     if (index >= 0 && index < _englishSubs.length) {

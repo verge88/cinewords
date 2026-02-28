@@ -32,10 +32,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadData() async {
     context.read<VideoProvider>().loadFeatured();
+    context.read<VideoProvider>().loadTrending();
     context.read<VocabularyProvider>().loadAll();
     final progress = await SupabaseService.getUserProgress();
     if (mounted) setState(() => _progress = progress);
   }
+
 
   @override
   Widget build(BuildContext context) {

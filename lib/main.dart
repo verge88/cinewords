@@ -12,11 +12,8 @@ import 'providers/vocabulary_provider.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-
-  // Initialize Supabase
   await SupabaseConfig.initialize();
 
-  // System UI
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
