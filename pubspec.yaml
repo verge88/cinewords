@@ -13,7 +13,6 @@ dependencies:
   # State management
   provider: ^6.1.2
 
-  youtube_transcript_api: ^1.0.0
   # Supabase
   supabase_flutter: ^2.8.0
 
