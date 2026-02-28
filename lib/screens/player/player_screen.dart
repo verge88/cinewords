@@ -23,12 +23,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   final GlobalKey<YouTubePlayerWidgetState> _playerKey = GlobalKey();
   bool _showSubtitleList = false;
 
-    @override
+  @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // Give the provider access to our WebView for subtitle fetching
-      context.read<PlayerProvider>().setPlayerKey(_playerKey);
       context.read<PlayerProvider>().loadVideo(widget.video);
     });
   }
@@ -57,16 +55,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
             },
             itemBuilder: (_) => [0.5, 0.75, 1.0, 1.25, 1.5]
                 .map((s) => PopupMenuItem(
-                      value: s,
-                      child: Text(
-                        '${s}x',
-                        style: TextStyle(
-                          fontWeight: playerProvider.playbackSpeed == s
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                        ),
-                      ),
-                    ))
+              value: s,
+              child: Text(
+                '${s}x',
+                style: TextStyle(
+                  fontWeight: playerProvider.playbackSpeed == s
+                      ? FontWeight.bold
+                      : FontWeight.normal,
+                ),
+              ),
+            ))
                 .toList(),
           ),
           // Toggle translation
@@ -95,7 +93,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             aspectRatio: 16 / 9,
             child: ClipRRect(
               borderRadius:
-                  const BorderRadius.vertical(bottom: Radius.circular(24)),
+              const BorderRadius.vertical(bottom: Radius.circular(24)),
               child: YouTubePlayerWidget(
                 key: _playerKey,
                 videoId: widget.video.youtubeId,
@@ -111,21 +109,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
           ),
 
-          // ─── Current Subtitles (Parallel) ───
-          DualSubtitlesWidget(
-            englishLine: playerProvider.currentEnglishLine,
-            russianLine: playerProvider.currentRussianLine,
-            showTranslation: playerProvider.showTranslation,
-            onWordTap: (word, line) => _onWordTap(word, line),
-            onReplay: () {
-              final line = playerProvider.currentEnglishLine;
-              if (line != null) {
-                _playerKey.currentState?.seekTo(line.startMs / 1000.0);
-              }
-            },
-          ).animate().fadeIn(),
-
-                    // ─── Current Subtitles (Parallel) ───
+          // ─── Current Subtitles (Parallel) — ONLY ONE instance ───
           DualSubtitlesWidget(
             englishLine: playerProvider.currentEnglishLine,
             russianLine: playerProvider.currentRussianLine,
@@ -146,17 +130,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
               child: Row(
                 children: [
                   SizedBox(
-                    width: 14, height: 14,
+                    width: 14,
+                    height: 14,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Theme.of(context).colorScheme.primary,
+                      color: cs.primary,
                     ),
                   ),
                   const SizedBox(width: 8),
                   Text(
                     'Loading subtitles...',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      color: cs.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -168,21 +153,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
               child: Text(
                 playerProvider.subtitleError!,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.error,
+                  color: cs.error,
                 ),
               ),
             )
           else if (playerProvider.englishSubs.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-              child: Text(
-                '${playerProvider.englishSubs.length} subtitle lines loaded',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.6),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                child: Text(
+                  '${playerProvider.englishSubs.length} subtitle lines loaded',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: cs.onSurfaceVariant.withOpacity(0.6),
+                  ),
                 ),
               ),
-            ),
-
 
           // ─── Subtitle List / Transcript ───
           if (_showSubtitleList)
@@ -241,24 +225,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
             leading: Text(
               _formatMs(line.startMs),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
+                color: cs.primary,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             title: Text(
               line.text,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
-                  ),
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+              ),
             ),
             subtitle: provider.showTranslation &&
-                    (ruLine?.text ?? line.translation) != null
+                (ruLine?.text ?? line.translation) != null
                 ? Text(
-                    ruLine?.text ?? line.translation ?? '',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                  )
+              ruLine?.text ?? line.translation ?? '',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            )
                 : null,
             onTap: () {
               _playerKey.currentState?.seekTo(line.startMs / 1000.0);
@@ -348,12 +332,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
         contextTimestampMs: line.startMs,
         onAddToVocabulary: (word, translation) {
           context.read<VocabularyProvider>().addWord(
-                word: word,
-                translation: translation,
-                contextSentence: line.text,
-                contextVideoId: widget.video.id,
-                contextTimestampMs: line.startMs,
-              );
+            word: word,
+            translation: translation,
+            contextSentence: line.text,
+            contextVideoId: widget.video.id,
+            contextTimestampMs: line.startMs,
+          );
           Navigator.pop(ctx);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
