@@ -40,11 +40,16 @@ class _VocabularyScreenState extends State<VocabularyScreen>
           SliverAppBar.medium(
             title: Text('Vocabulary', style: tt.headlineMedium),
             actions: [
-              if (vocab.reviewQueue.isNotEmpty)
+              if (vocab.reviewQueue.isNotEmpty || vocab.allWords.any((w) => w.status != 'mastered'))
                 FilledButton.icon(
-                  onPressed: () => setState(() => _isReviewMode = true),
+                  onPressed: () {
+                    vocab.preparePractice();
+                    setState(() => _isReviewMode = true);
+                  },
                   icon: const Icon(Icons.school_rounded, size: 18),
-                  label: Text('Review (${vocab.reviewQueue.length})'),
+                  label: Text(vocab.reviewQueue.isNotEmpty 
+                      ? 'Review (${vocab.reviewQueue.length})' 
+                      : 'Practice'),
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                   ),

@@ -138,11 +138,12 @@ class SupabaseService {
     final userId = SupabaseConfig.userId;
     if (userId == null) return [];
 
+    final nowWithSkew = DateTime.now().toUtc().add(const Duration(minutes: 5));
     final data = await _client
         .from('vocabulary')
         .select()
         .eq('user_id', userId)
-        .lte('next_review_at', DateTime.now().toIso8601String())
+        .lte('next_review_at', nowWithSkew.toIso8601String())
         .neq('status', 'mastered')
         .order('next_review_at')
         .limit(20);
@@ -156,20 +157,29 @@ class SupabaseService {
     String? contextVideoId,
     int? contextTimestampMs,
   }) async {
-    final userId = SupabaseConfig.userId!;
-    final data = await _client
-        .from('vocabulary')
-        .upsert({
-          'user_id': userId,
-          'word': word.toLowerCase().trim(),
-          'translation': translation,
-          'context_sentence': contextSentence,
-          'context_video_id': contextVideoId,
-          'context_timestamp_ms': contextTimestampMs,
-        }, onConflict: 'user_id,word')
-        .select()
-        .single();
-    return WordCard.fromJson(data);
+    try {
+      final userId = SupabaseConfig.userId;
+      if (userId == null) {
+        throw Exception('User is not logged in');
+      }
+      
+      final data = await _client
+          .from('vocabulary')
+          .upsert({
+            'user_id': userId,
+            'word': word.toLowerCase().trim(),
+            'translation': translation,
+            'context_sentence': contextSentence,
+            'context_video_id': contextVideoId,
+            'context_timestamp_ms': contextTimestampMs,
+          }, onConflict: 'user_id,word')
+          .select()
+          .single();
+      return WordCard.fromJson(data);
+    } catch (e) {
+      debugPrint('🔴 [SupabaseService] Error adding word: $e');
+      rethrow;
+    }
   }
 
   static Future<void> reviewWord(String vocabId, int quality) async {
@@ -189,37 +199,44 @@ class SupabaseService {
     final userId = SupabaseConfig.userId;
     if (userId == null) return const UserProgress();
 
-    final profile = await _client
-        .from('profiles')
-        .select()
-        .eq('id', userId)
-        .single();
+    try {
+      final profile = await _client
+          .from('profiles')
+          .select()
+          .eq('id', userId)
+          .single();
 
-    final today = DateTime.now().toIso8601String().substring(0, 10);
-    final todayStats = await _client
-        .from('daily_stats')
-        .select()
-        .eq('user_id', userId)
-        .eq('date', today)
-        .maybeSingle();
+      final today = DateTime.now().toIso8601String().substring(0, 10);
+      final todayStatsList = await _client
+          .from('daily_stats')
+          .select()
+          .eq('user_id', userId)
+          .eq('date', today)
+          .limit(1);
+          
+      final todayStats = todayStatsList.isNotEmpty ? todayStatsList.first : null;
 
-    final reviewCount = await _client
-        .from('vocabulary')
-        .select('id')
-        .eq('user_id', userId)
-        .lte('next_review_at', DateTime.now().toIso8601String())
-        .neq('status', 'mastered');
+      final reviewCountData = await _client
+          .from('vocabulary')
+          .select('id')
+          .eq('user_id', userId)
+          .lte('next_review_at', DateTime.now().toIso8601String())
+          .neq('status', 'mastered');
 
-    return UserProgress(
-      streakDays: profile['streak_days'] ?? 0,
-      totalWordsLearned: profile['total_words_learned'] ?? 0,
-      totalWatchMinutes: profile['total_watch_minutes'] ?? 0,
-      dailyGoalMinutes: profile['daily_goal_minutes'] ?? 15,
-      todayMinutes: todayStats?['minutes_watched'] ?? 0,
-      todayWords: todayStats?['words_added'] ?? 0,
-      todayReviewed: todayStats?['words_reviewed'] ?? 0,
-      wordsToReview: (reviewCount as List).length,
-    );
+      return UserProgress(
+        streakDays: profile['streak_days'] ?? 0,
+        totalWordsLearned: profile['total_words_learned'] ?? 0,
+        totalWatchMinutes: profile['total_watch_minutes'] ?? 0,
+        dailyGoalMinutes: profile['daily_goal_minutes'] ?? 15,
+        todayMinutes: todayStats?['minutes_watched'] ?? 0,
+        todayWords: todayStats?['words_added'] ?? 0,
+        todayReviewed: todayStats?['words_reviewed'] ?? 0,
+        wordsToReview: (reviewCountData as List?)?.length ?? 0,
+      );
+    } catch (e) {
+      debugPrint('🔴 [Supabase] Error loading user progress: $e');
+      return const UserProgress();
+    }
   }
 
   static Future<void> updateWatchProgress(
@@ -228,24 +245,27 @@ class SupabaseService {
     int watchDurationSec,
   ) async {
     final userId = SupabaseConfig.userId;
-    if (userId == null) return;
+    if (userId == null || watchDurationSec <= 0 || videoId.isEmpty) return;
 
-    await _client.from('watch_history').upsert({
-      'user_id': userId,
-      'video_id': videoId,
-      'last_position_ms': positionMs,
-      'watch_duration_seconds': watchDurationSec,
-      'updated_at': DateTime.now().toIso8601String(),
-    }, onConflict: 'user_id,video_id');
+    try {
+      // Ensure videoId is a UUID. Sometimes we pass a youtube_id instead when the video isn't saved yet.
+      String targetVideoId = videoId;
+      final isUuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false).hasMatch(videoId);
+      
+      if (!isUuid) {
+        final videoData = await _client.from('videos').select('id').eq('youtube_id', videoId).maybeSingle();
+        if (videoData == null) return; // Cannot track watch time for a video not in DB
+        targetVideoId = videoData['id'];
+      }
 
-    // Update daily stats
-    final today = DateTime.now().toIso8601String().substring(0, 10);
-    await _client.rpc('update_streak', params: {'p_user_id': userId});
-
-    await _client.from('daily_stats').upsert({
-      'user_id': userId,
-      'date': today,
-      'minutes_watched': (watchDurationSec / 60).ceil(),
-    }, onConflict: 'user_id,date');
+      await _client.rpc('log_watch_progress', params: {
+        'p_user_id': userId,
+        'p_video_id': targetVideoId,
+        'p_position_ms': positionMs,
+        'p_duration_sec': watchDurationSec,
+      });
+    } catch (e) {
+      debugPrint('[SupabaseService] Error logging watch progress: $e');
+    }
   }
 }

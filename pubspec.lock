@@ -1197,6 +1197,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.5.3"
+  youtube_transcript_api:
+    dependency: "direct main"
+    description:
+      name: youtube_transcript_api
+      sha256: "61404b66ba0743d0d5d2c114ccde990762c0720919021c32d6c48aba84e6c51b"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
 sdks:
   dart: ">=3.10.0 <4.0.0"
   flutter: ">=3.38.0"

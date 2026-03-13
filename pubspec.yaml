@@ -20,7 +20,7 @@ dependencies:
   youtube_explode_dart: ^2.3.5
   #youtube_player_iframe: ^5.2.0
   flutter_inappwebview: ^6.1.5
-
+  youtube_transcript_api: ^1.0.0
 
   # Media
   media_kit: ^1.1.11

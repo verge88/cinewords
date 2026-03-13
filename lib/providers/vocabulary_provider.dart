@@ -22,9 +22,11 @@ class VocabularyProvider extends ChangeNotifier {
   int get reviewCount => _allWords.where((w) => w.status == 'review').length;
   int get masteredCount => _allWords.where((w) => w.status == 'mastered').length;
 
-  Future<void> loadAll() async {
-    _isLoading = true;
-    notifyListeners();
+  Future<void> loadAll({bool silent = false}) async {
+    if (!silent) {
+      _isLoading = true;
+      notifyListeners();
+    }
 
     try {
       _allWords = await SupabaseService.getUserVocabulary();
@@ -34,7 +36,19 @@ class VocabularyProvider extends ChangeNotifier {
       debugPrint('Error loading vocabulary: $e');
     }
 
-    _isLoading = false;
+    if (!silent) {
+      _isLoading = false;
+    }
+    notifyListeners();
+  }
+
+  void preparePractice() {
+    if (_reviewQueue.isEmpty) {
+      final available = _allWords.where((w) => w.status != 'mastered').toList();
+      available.shuffle();
+      _reviewQueue = available.take(20).toList();
+    }
+    _currentReviewIndex = 0;
     notifyListeners();
   }
 
@@ -53,10 +67,10 @@ class VocabularyProvider extends ChangeNotifier {
         contextVideoId: contextVideoId,
         contextTimestampMs: contextTimestampMs,
       );
-      _allWords.insert(0, card);
-      notifyListeners();
+      await loadAll(silent: true);
     } catch (e) {
       debugPrint('Error adding word: $e');
+      rethrow;
     }
   }
 

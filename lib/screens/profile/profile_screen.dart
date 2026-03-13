@@ -134,7 +134,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     physics: const NeverScrollableScrollPhysics(),
                     mainAxisSpacing: 12,
                     crossAxisSpacing: 12,
-                    childAspectRatio: 1.4,
+                    childAspectRatio: 1.15,
                     children: [
                       _StatCard(
                         icon: Icons.local_fire_department_rounded,

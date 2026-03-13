@@ -52,7 +52,10 @@ class WordCard extends Equatable {
     );
   }
 
-  bool get isDueForReview => DateTime.now().isAfter(nextReviewAt);
+  bool get isDueForReview {
+    final nowWithSkew = DateTime.now().toUtc().add(const Duration(minutes: 5));
+    return nowWithSkew.isAfter(nextReviewAt.toUtc());
+  }
 
   String get statusEmoji {
     switch (status) {

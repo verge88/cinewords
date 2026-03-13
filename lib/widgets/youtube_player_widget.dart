@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
@@ -31,9 +30,15 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
   InAppWebViewController? _webController;
   Timer? _positionTimer;
   bool _isReady = false;
+  bool _hasError = false;
+  String? _errorMessage;
 
-  // Completer for subtitle fetch requests
-  Completer<String>? _subtitleCompleter;
+  // Стандартный Chrome Mobile User-Agent (без "wv" — иначе YouTube
+  // определяет WebView и блокирует embed с ошибкой 150/153).
+  static const _userAgent =
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) '
+      'AppleWebKit/537.36 (KHTML, like Gecko) '
+      'Chrome/120.0.6099.230 Mobile Safari/537.36';
 
   @override
   void didUpdateWidget(covariant YouTubePlayerWidget oldWidget) {
@@ -46,139 +51,30 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
     }
   }
 
-  String _buildPlayerHtml() {
+  String _buildEmbedUrl(String videoId) {
     final autoPlay = widget.autoPlay ? 1 : 0;
     final controls = widget.showControls ? 1 : 0;
-
-    return '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="referrer" content="strict-origin-when-cross-origin">
-  <style>
-    * { margin: 0; padding: 0; overflow: hidden; }
-    html, body { width: 100%; height: 100%; background: #000; }
-    #player { width: 100%; height: 100%; }
-    iframe { width: 100%; height: 100%; border: none; }
-  </style>
-</head>
-<body>
-  <div id="player"></div>
-  <script>
-    var tag = document.createElement('script');
-    tag.src = "https://www.youtube.com/iframe_api";
-    var firstScriptTag = document.getElementsByTagName('script')[0];
-    firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-
-    var player;
-    
-    function onYouTubeIframeAPIReady() {
-      player = new YT.Player('player', {
-        videoId: '${widget.videoId}',
-        host: 'https://www.youtube-nocookie.com',
-        playerVars: {
-          'autoplay': $autoPlay,
-          'controls': $controls,
-          'modestbranding': 1,
-          'rel': 0,
-          'playsinline': 1,
-          'enablejsapi': 1,
-          'origin': 'https://www.youtube-nocookie.com',
-          'widget_referrer': 'https://www.youtube-nocookie.com',
-          'cc_load_policy': 0,
-          'iv_load_policy': 3
-        },
-        events: {
-          'onReady': onPlayerReady,
-          'onStateChange': onPlayerStateChange,
-          'onError': onPlayerError
-        }
-      });
-    }
-
-    function onPlayerReady(event) {
-      window.flutter_inappwebview.callHandler('onReady', player.getDuration());
-    }
-
-    function onPlayerStateChange(event) {
-      var isPlaying = event.data == YT.PlayerState.PLAYING;
-      window.flutter_inappwebview.callHandler('onStateChange', event.data, isPlaying);
-    }
-
-    function onPlayerError(event) {
-      window.flutter_inappwebview.callHandler('onError', event.data);
-    }
-
-    function getPosition() {
-      if (player && player.getCurrentTime) {
-        return player.getCurrentTime();
-      }
-      return 0;
-    }
-
-    function seekTo(seconds) {
-      if (player && player.seekTo) player.seekTo(seconds, true);
-    }
-
-    function playVideo() {
-      if (player && player.playVideo) player.playVideo();
-    }
-
-    function pauseVideo() {
-      if (player && player.pauseVideo) player.pauseVideo();
-    }
-
-    function setRate(rate) {
-      if (player && player.setPlaybackRate) player.setPlaybackRate(rate);
-    }
-
-    function loadNewVideo(videoId) {
-      if (player && player.loadVideoById) player.loadVideoById(videoId);
-    }
-
-    // ═══════════════════════════════════════════
-    //  Subtitle fetching via XHR (uses browser cookies/session)
-    // ═══════════════════════════════════════════
-    function fetchSubtitleData(url) {
-      return new Promise(function(resolve, reject) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        xhr.onload = function() {
-          if (xhr.status === 200) {
-            resolve(xhr.responseText);
-          } else {
-            resolve('');
-          }
-        };
-        xhr.onerror = function() {
-          resolve('');
-        };
-        xhr.send();
-      });
-    }
-
-    async function downloadSubtitles(url) {
-      try {
-        var text = await fetchSubtitleData(url);
-        window.flutter_inappwebview.callHandler('onSubtitlesLoaded', text);
-      } catch(e) {
-        window.flutter_inappwebview.callHandler('onSubtitlesLoaded', '');
-      }
-    }
-  </script>
-</body>
-</html>
-''';
+    return 'https://www.youtube.com/embed/$videoId'
+        '?autoplay=$autoPlay'
+        '&controls=$controls'
+        '&modestbranding=1'
+        '&rel=0'
+        '&playsinline=1'
+        '&enablejsapi=1'
+        '&cc_load_policy=0'
+        '&iv_load_policy=3'
+        '&fs=0'
+        '&origin=https://www.youtube.com';
   }
 
   void _startPositionTracking() {
     _positionTimer?.cancel();
-    _positionTimer = Timer.periodic(const Duration(milliseconds: 250), (_) async {
+    _positionTimer =
+        Timer.periodic(const Duration(milliseconds: 250), (_) async {
       if (_webController == null || !_isReady) return;
       try {
         final result = await _webController!.evaluateJavascript(
-          source: 'getPosition();',
+          source: 'document.querySelector("video")?.currentTime ?? 0;',
         );
         if (result != null && result != 'null' && result != '') {
           final seconds = double.tryParse(result.toString());
@@ -192,118 +88,170 @@ class YouTubePlayerWidgetState extends State<YouTubePlayerWidget> {
     });
   }
 
+  Future<void> _injectTrackingScripts() async {
+    await _webController?.evaluateJavascript(source: '''
+      (function() {
+        var attempts = 0;
+        function setup() {
+          var v = document.querySelector('video');
+          if (!v) {
+            attempts++;
+            if (attempts < 30) setTimeout(setup, 500);
+            return;
+          }
+          v.addEventListener('playing', function() {
+            window.flutter_inappwebview.callHandler('onPlayState', true);
+          });
+          v.addEventListener('pause', function() {
+            window.flutter_inappwebview.callHandler('onPlayState', false);
+          });
+          v.addEventListener('durationchange', function() {
+            if (v.duration && !isNaN(v.duration)) {
+              window.flutter_inappwebview.callHandler('onDuration', v.duration);
+            }
+          });
+          if (v.duration && !isNaN(v.duration)) {
+            window.flutter_inappwebview.callHandler('onDuration', v.duration);
+          }
+        }
+        setup();
+      })();
+    ''');
+  }
+
   // ──── Public API ────
 
   Future<void> seekTo(double seconds) async {
-    await _webController?.evaluateJavascript(source: 'seekTo($seconds);');
-  }
-
-  Future<void> play() async {
-    await _webController?.evaluateJavascript(source: 'playVideo();');
-  }
-
-  Future<void> pause() async {
-    await _webController?.evaluateJavascript(source: 'pauseVideo();');
-  }
-
-  Future<void> setPlaybackRate(double rate) async {
-    await _webController?.evaluateJavascript(source: 'setRate($rate);');
-  }
-
-  Future<void> loadVideo(String videoId) async {
     await _webController?.evaluateJavascript(
-      source: "loadNewVideo('$videoId');",
+      source:
+          'var v = document.querySelector("video"); if(v) v.currentTime = $seconds;',
     );
   }
 
-  /// Download subtitles via the WebView's XHR (has correct cookies/session)
-  Future<String> fetchSubtitlesViaWebView(String url) async {
-    if (_webController == null || !_isReady) return '';
+  Future<void> play() async {
+    await _webController?.evaluateJavascript(
+      source: 'var v = document.querySelector("video"); if(v) v.play();',
+    );
+  }
 
-    _subtitleCompleter = Completer<String>();
+  Future<void> pause() async {
+    await _webController?.evaluateJavascript(
+      source: 'var v = document.querySelector("video"); if(v) v.pause();',
+    );
+  }
 
-    try {
-      await _webController!.evaluateJavascript(
-        source: "downloadSubtitles('${url.replaceAll("'", "\\'")}');",
-      );
+  Future<void> setPlaybackRate(double rate) async {
+    await _webController?.evaluateJavascript(
+      source:
+          'var v = document.querySelector("video"); if(v) v.playbackRate = $rate;',
+    );
+  }
 
-      // Wait for the JS callback with a timeout
-      final result = await _subtitleCompleter!.future.timeout(
-        const Duration(seconds: 20),
-        onTimeout: () => '',
-      );
-
-      return result;
-    } catch (e) {
-      debugPrint('[Player] WebView subtitle fetch error: $e');
-      return '';
-    }
+  Future<void> loadVideo(String videoId) async {
+    _isReady = false;
+    _hasError = false;
+    _errorMessage = null;
+    _positionTimer?.cancel();
+    if (mounted) setState(() {});
+    await _webController?.loadUrl(
+      urlRequest: URLRequest(url: WebUri(_buildEmbedUrl(videoId))),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_hasError) {
+      return Container(
+        color: Colors.black,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.white70, size: 48),
+              const SizedBox(height: 12),
+              Text(
+                _errorMessage ?? 'Video playback error',
+                style: const TextStyle(color: Colors.white70),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () => loadVideo(widget.videoId),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return InAppWebView(
+      initialUrlRequest: URLRequest(
+        url: WebUri(_buildEmbedUrl(widget.videoId)),
+      ),
       initialSettings: InAppWebViewSettings(
         mediaPlaybackRequiresUserGesture: false,
         allowsInlineMediaPlayback: true,
-        iframeAllowFullscreen: true,
         javaScriptEnabled: true,
-        transparentBackground: true,
         useHybridComposition: true,
-        userAgent:
-            'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-      ),
-      initialData: InAppWebViewInitialData(
-        data: _buildPlayerHtml(),
-        baseUrl: WebUri('https://www.youtube-nocookie.com'),
-        encoding: 'utf-8',
-        mimeType: 'text/html',
+        iframeAllowFullscreen: true,
+        transparentBackground: true,
+        mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+        domStorageEnabled: true,
+        thirdPartyCookiesEnabled: true,
+        // КРИТИЧНО: стандартный User-Agent Chrome, без "wv".
+        // YouTube блокирует embed в Android WebView (ошибка 150/153),
+        // если видит "wv" в User-Agent.
+        userAgent: _userAgent,
       ),
       onWebViewCreated: (controller) {
         _webController = controller;
 
         controller.addJavaScriptHandler(
-          handlerName: 'onReady',
+          handlerName: 'onPlayState',
           callback: (args) {
-            _isReady = true;
+            if (args.isNotEmpty) {
+              widget.onPlayingChanged?.call(args[0] == true);
+            }
+          },
+        );
+
+        controller.addJavaScriptHandler(
+          handlerName: 'onDuration',
+          callback: (args) {
             if (args.isNotEmpty) {
               final duration = double.tryParse(args[0].toString()) ?? 0;
               widget.onDurationChanged?.call(
                 Duration(milliseconds: (duration * 1000).round()),
               );
             }
-            _startPositionTracking();
           },
         );
-
-        controller.addJavaScriptHandler(
-          handlerName: 'onStateChange',
-          callback: (args) {
-            if (args.length >= 2) {
-              final isPlaying = args[1] == true;
-              widget.onPlayingChanged?.call(isPlaying);
-            }
-          },
-        );
-
-        controller.addJavaScriptHandler(
-          handlerName: 'onError',
-          callback: (args) {
-            debugPrint('YouTube Player Error: ${args.firstOrNull}');
-          },
-        );
-
-        // Handler for subtitle data coming back from JS
-        controller.addJavaScriptHandler(
-          handlerName: 'onSubtitlesLoaded',
-          callback: (args) {
-            final data = args.isNotEmpty ? args[0]?.toString() ?? '' : '';
-            if (_subtitleCompleter != null && !_subtitleCompleter!.isCompleted) {
-              _subtitleCompleter!.complete(data);
-            }
-          },
-        );
+      },
+      onLoadStop: (controller, url) async {
+        debugPrint('[YT Player] Page loaded: $url');
+        _isReady = true;
+        _startPositionTracking();
+        await _injectTrackingScripts();
+        if (widget.playbackRate != 1.0) {
+          setPlaybackRate(widget.playbackRate);
+        }
+      },
+      onConsoleMessage: (controller, consoleMessage) {
+        debugPrint('[YT WebView Console] ${consoleMessage.message}');
+      },
+      onReceivedError: (controller, request, error) {
+        debugPrint(
+            '[YT Player] Load error: ${request.url} — ${error.description}');
+        if (request.url.toString().contains('youtube.com/embed')) {
+          if (mounted) {
+            setState(() {
+              _hasError = true;
+              _errorMessage = error.description;
+            });
+          }
+        }
       },
     );
   }
