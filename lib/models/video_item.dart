@@ -7,10 +7,10 @@ class VideoItem extends Equatable {
   final String? description;
   final String? thumbnailUrl;
   final String? channelName;
-  final int? durationSeconds;
+  final int? durationSec;
   final String difficulty;
   final String category;
-  final List<String> tags;
+  final List<String> keywords;
   final int totalUniqueWords;
   final int viewCount;
   final bool isFeatured;
@@ -22,10 +22,10 @@ class VideoItem extends Equatable {
     this.description,
     this.thumbnailUrl,
     this.channelName,
-    this.durationSeconds,
+    this.durationSec,
     this.difficulty = 'intermediate',
     this.category = 'general',
-    this.tags = const [],
+    this.keywords = const [],
     this.totalUniqueWords = 0,
     this.viewCount = 0,
     this.isFeatured = false,
@@ -33,16 +33,16 @@ class VideoItem extends Equatable {
 
   factory VideoItem.fromJson(Map<String, dynamic> json) {
     return VideoItem(
-      id: json['id'],
-      youtubeId: json['youtube_id'],
-      title: json['title'],
+      id: json['id'] ?? '',
+      youtubeId: json['youtube_id'] ?? '',
+      title: json['title'] ?? '',
       description: json['description'],
       thumbnailUrl: json['thumbnail_url'],
-      channelName: json['channel_name'],
-      durationSeconds: json['duration_seconds'],
+      channelName: json['channel_name'] ?? json['author'], // Fallback if still named old way in some rows
+      durationSec: json['duration_sec'] ?? ((json['duration_ms'] ?? json['duration_seconds'] ?? 0) ~/ 1000),
       difficulty: json['difficulty'] ?? 'intermediate',
       category: json['category'] ?? 'general',
-      tags: List<String>.from(json['tags'] ?? []),
+      keywords: List<String>.from(json['keywords'] ?? json['tags'] ?? []),
       totalUniqueWords: json['total_unique_words'] ?? 0,
       viewCount: json['view_count'] ?? 0,
       isFeatured: json['is_featured'] ?? false,
@@ -55,16 +55,15 @@ class VideoItem extends Equatable {
         'description': description,
         'thumbnail_url': thumbnailUrl,
         'channel_name': channelName,
-        'duration_seconds': durationSeconds,
+        'duration_sec': durationSec,
         'difficulty': difficulty,
         'category': category,
-        'tags': tags,
-        'total_unique_words': totalUniqueWords,
+        // keywords and total_unique_words are not in the 'videos' table schema in schema.sql
       };
 
   String get formattedDuration {
-    if (durationSeconds == null) return '';
-    final d = Duration(seconds: durationSeconds!);
+    if (durationSec == null) return '';
+    final d = Duration(seconds: durationSec!);
     final h = d.inHours;
     final m = d.inMinutes.remainder(60);
     final s = d.inSeconds.remainder(60);
@@ -89,8 +88,6 @@ class VideoItem extends Equatable {
     }
   }
 
-  /// Returns a hex color value for the difficulty level.
-  /// Use with Color() in UI widgets.
   int get difficultyColorValue {
     switch (difficulty) {
       case 'beginner':
@@ -110,4 +107,4 @@ class VideoItem extends Equatable {
 
   @override
   List<Object?> get props => [id, youtubeId];
-}
+}

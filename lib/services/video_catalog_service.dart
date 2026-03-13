@@ -833,12 +833,12 @@ class VideoCatalogService {
     final data = {
       'youtube_id': video.id.value,
       'title': video.title,
-      'author': video.author,
+      'channel_name': video.author,
       'channel_id': video.channelId.value,
       'description': video.description.length > 5000
           ? video.description.substring(0, 5000)
           : video.description,
-      'duration_ms': video.duration?.inMilliseconds,
+      'duration_sec': video.duration?.inSeconds,
       'thumbnail_url': video.thumbnails.highResUrl,
       'keywords': video.keywords.take(20).toList(),
       'has_captions': captionLanguages.isNotEmpty,

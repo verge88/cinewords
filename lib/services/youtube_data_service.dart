@@ -211,10 +211,10 @@ class YouTubeDataService {
           thumbnails['medium']?['url'] ??
           thumbnails['default']?['url'],
       channelName: snippet['channelTitle'] ?? '',
-      durationSeconds: _parseIsoDuration(contentDetails['duration']),
+      durationSec: _parseIsoDuration(contentDetails['duration']) ?? 0,
       difficulty: _estimateDifficulty(snippet),
       category: _categorize(snippet),
-      tags: List<String>.from(snippet['tags'] ?? []).take(10).toList(),
+      keywords: List<String>.from(snippet['tags'] ?? []).take(10).toList(),
       totalUniqueWords: 0,
       viewCount: int.tryParse(statistics['viewCount'] ?? '0') ?? 0,
       isFeatured: false,

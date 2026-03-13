@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
+import '../../providers/video_provider.dart';
 import '../../models/video_item.dart';
 import '../../models/subtitle_line.dart';
 import '../../providers/player_provider.dart';
@@ -195,6 +198,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
         title: Text(widget.video.title,
             maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
+          // Favorite toggle
+          Consumer<VideoProvider>(
+            builder: (context, vProvider, _) {
+              final isFav = vProvider.isFavorite(widget.video.id);
+              return IconButton(
+                icon: Icon(
+                  isFav ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
+                  color: isFav ? Colors.red : null,
+                ),
+                onPressed: () => vProvider.toggleFavorite(widget.video),
+                tooltip: 'Favorite',
+              );
+            },
+          ),
           // Speed
           PopupMenuButton<double>(
             icon: const Icon(Icons.speed_rounded),
@@ -232,35 +249,83 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          // ── Player ──
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: ClipRRect(
-              borderRadius:
-                  const BorderRadius.vertical(bottom: Radius.circular(24)),
-              child: _buildPlayer(pp),
-            ),
+          Column(
+            children: [
+              // ── Player ──
+              AspectRatio(
+                aspectRatio: 16 / 9,
+                child: ClipRRect(
+                  borderRadius:
+                      const BorderRadius.vertical(bottom: Radius.circular(24)),
+                  child: _buildPlayer(pp),
+                ),
+              ),
+
+              // ── Subtitles ──
+              if (pp.isAutoTranslating)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                  color: cs.tertiaryContainer,
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: cs.onTertiaryContainer),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        'Auto-translating subtitles...',
+                        style: TextStyle(
+                          color: cs.onTertiaryContainer,
+                          fontWeight: FontWeight.w500,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ).animate().fadeIn().slideY(),
+
+              DualSubtitlesWidget(
+                englishLine: pp.currentEnglishLine,
+                russianLine: pp.currentRussianLine,
+                showTranslation: pp.showTranslation,
+                onWordTap: _onWordTap,
+                onPhraseAdd: () {
+                  final enLine = pp.currentEnglishLine;
+                  final ruLine = pp.currentRussianLine;
+                  if (enLine != null) {
+                    _onPhraseAdd(enLine.text, ruLine?.text ?? enLine.translation, enLine);
+                  }
+                },
+                onReplay: () {
+                  final l = pp.currentEnglishLine;
+                  if (l != null) {
+                    _player.seek(Duration(milliseconds: l.startMs));
+                  }
+                },
+              ).animate().fadeIn(),
+
+              // ── Bottom ──
+              Expanded(
+                child: _showSubList ? _subList(pp) : _info(pp),
+              ),
+            ],
           ),
 
-          // ── Subtitles ──
-          DualSubtitlesWidget(
-            englishLine: pp.currentEnglishLine,
-            russianLine: pp.currentRussianLine,
-            showTranslation: pp.showTranslation,
-            onWordTap: _onWordTap,
-            onReplay: () {
-              final l = pp.currentEnglishLine;
-              if (l != null) {
-                _player.seek(Duration(milliseconds: l.startMs));
-              }
-            },
-          ).animate().fadeIn(),
-
-          // ── Bottom ──
-          Expanded(
-            child: _showSubList ? _subList(pp) : _info(pp),
+          // ── Floating Controls ──
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 24,
+            child: _FloatingControls(player: _player, isPlaying: pp.isPlaying)
+                .animate()
+                .scale(delay: 400.ms, curve: Curves.easeOutBack)
+                .fadeIn(),
           ),
         ],
       ),
@@ -334,8 +399,38 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
 
     // media_kit Video виджет
-    return Video(controller: _videoController);
+    return Video(
+      controller: _videoController,
+      controls: (state) => Stack(
+        children: [
+          MaterialVideoControls(state),
+          _SubtitleOverlay(
+            pp: pp,
+            videoState: state,
+            onWordTap: _onWordTap,
+            onReplay: () {
+              final l = pp.currentEnglishLine;
+              if (l != null) {
+                _player.seek(Duration(milliseconds: l.startMs));
+              }
+            },
+            onPhraseAdd: () {
+              final enLine = pp.currentEnglishLine;
+              final ruLine = pp.currentRussianLine;
+              if (enLine != null) {
+                _onPhraseAdd(
+                    enLine.text, ruLine?.text ?? enLine.translation, enLine);
+              }
+            },
+          ),
+          _FullscreenSettingsOverlay(pp: pp),
+        ],
+      ),
+    );
   }
+
+  ItemScrollController? _itemScrollController;
+  SubtitleLine? _lastScrolledLine;
 
   Widget _subList(PlayerProvider pp) {
     final cs = Theme.of(context).colorScheme;
@@ -347,12 +442,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
           child: Text('No subtitles available',
               style: Theme.of(context).textTheme.titleMedium));
     }
-    return ListView.builder(
+
+    _itemScrollController ??= ItemScrollController();
+
+    // Auto-scroll logic
+    final activeLine = pp.currentEnglishLine;
+    if (activeLine != null && activeLine != _lastScrolledLine) {
+      _lastScrolledLine = activeLine;
+      final index = pp.englishSubs.indexOf(activeLine);
+      if (index != -1) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_itemScrollController!.isAttached) {
+            _itemScrollController!.scrollTo(
+              index: index,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+              alignment: 0.3, // center-ish
+            );
+          }
+        });
+      }
+    }
+
+    return ScrollablePositionedList.builder(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      itemScrollController: _itemScrollController,
       itemCount: pp.englishSubs.length,
       itemBuilder: (ctx, i) {
         final line = pp.englishSubs[i];
-        final isActive = line == pp.currentEnglishLine;
+        final isActive = line == activeLine;
         final ruLine =
             i < pp.russianSubs.length ? pp.russianSubs[i] : null;
         return Container(
@@ -382,6 +500,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ?.copyWith(color: cs.onSurfaceVariant))
                 : null,
             onTap: () {
+              // Pause auto-scroll briefly when user taps so they aren't jarred
+              _lastScrolledLine = line; 
               _player.seek(Duration(milliseconds: line.startMs));
             },
           ),
@@ -420,57 +540,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 '${pp.englishSubs.length} lines', cs.tertiary),
           ]),
           const Spacer(),
-          // Controls
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            IconButton.filledTonal(
-              onPressed: () {
-                final pos = _player.state.position;
-                final target = pos - const Duration(seconds: 5);
-                _player
-                    .seek(target > Duration.zero ? target : Duration.zero);
-              },
-              icon: const Icon(Icons.replay_5_rounded),
-            ),
-            const SizedBox(width: 16),
-            IconButton.filled(
-              onPressed: () {
-                _player.playOrPause();
-              },
-              icon: Icon(
-                  pp.isPlaying
-                      ? Icons.pause_rounded
-                      : Icons.play_arrow_rounded,
-                  size: 32),
-              style:
-                  IconButton.styleFrom(fixedSize: const Size(64, 64)),
-            ),
-            const SizedBox(width: 16),
-            IconButton.filledTonal(
-              onPressed: () {
-                final pos = _player.state.position;
-                _player.seek(pos + const Duration(seconds: 5));
-              },
-              icon: const Icon(Icons.forward_5_rounded),
-            ),
-          ]),
           const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: cs.tertiaryContainer.withOpacity(0.3),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Row(children: [
-              Icon(Icons.lightbulb_outline_rounded,
-                  color: cs.tertiary),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: Text(
-                      'Tap any word in subtitles to translate and save it!',
-                      style: tt.bodySmall
-                          ?.copyWith(color: cs.onSurface))),
-            ]),
-          ),
+          // Container(
+          //   padding: const EdgeInsets.all(16),
+          //   decoration: BoxDecoration(
+          //     color: cs.tertiaryContainer.withOpacity(0.3),
+          //     borderRadius: BorderRadius.circular(20),
+          //   ),
+          //   child: Row(children: [
+          //     Icon(Icons.lightbulb_outline_rounded,
+          //         color: cs.tertiary),
+          //     const SizedBox(width: 12),
+          //     Expanded(
+          //         child: Text(
+          //             'Tap any word in subtitles to translate and save it!',
+          //             style: tt.bodySmall
+          //                 ?.copyWith(color: cs.onSurface))),
+          //   ]),
+          // ),
         ],
       ),
     );
@@ -486,14 +573,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
         contextSentence: line.text,
         contextVideoId: widget.video.id,
         contextTimestampMs: line.startMs,
-        onAddToVocabulary: (w, t) async {
+        onAddToVocabulary: (w, t, p) async {
           try {
             await context.read<VocabularyProvider>().addWord(
                 word: w,
                 translation: t,
+                phonetic: p, 
                 contextSentence: line.text,
                 contextVideoId: widget.video.id,
-                contextTimestampMs: line.startMs);
+                contextTimestampMs: line.startMs,
+                type: 'word');
             if (ctx.mounted) Navigator.pop(ctx);
             _player.play();
             if (mounted) {
@@ -515,6 +604,48 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ).whenComplete(() => _player.play());
   }
 
+  void _onPhraseAdd(String phrase, String? translationFallback, SubtitleLine line) {
+    _player.pause();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => WordTapOverlay(
+        word: phrase, // Using phrase as the word
+        prefilledTranslation: translationFallback,
+        contextSentence: line.text,
+        contextVideoId: widget.video.id,
+        contextTimestampMs: line.startMs,
+        onAddToVocabulary: (w, t, p) async {
+          try {
+            await context.read<VocabularyProvider>().addWord(
+                word: w,
+                translation: t,
+                phonetic: p, 
+                contextSentence: line.text,
+                contextVideoId: widget.video.id,
+                contextTimestampMs: line.startMs,
+                type: 'phrase');
+            if (ctx.mounted) Navigator.pop(ctx);
+            _player.play();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text('Phrase added!'),
+                  behavior: SnackBarBehavior.floating));
+            }
+          } catch (e) {
+             if (mounted) {
+               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text('Failed to add phrase: $e'),
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  behavior: SnackBarBehavior.floating));
+             }
+          }
+        },
+        onSpeak: () => TtsService.speak(phrase),
+      ),
+    ).whenComplete(() => _player.play());
+  }
+
   String _fmt(int ms) {
     final d = Duration(milliseconds: ms);
     return '${d.inMinutes.remainder(60).toString().padLeft(2, '0')}:${d.inSeconds.remainder(60).toString().padLeft(2, '0')}';
@@ -532,6 +663,195 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _player.dispose();
     _streamService.dispose();
     super.dispose();
+  }
+}
+
+class _SubtitleOverlay extends StatelessWidget {
+  final PlayerProvider pp;
+  final VideoState videoState;
+  final Function(String, SubtitleLine) onWordTap;
+  final VoidCallback onReplay;
+  final VoidCallback onPhraseAdd;
+
+  const _SubtitleOverlay({
+    required this.pp,
+    required this.videoState,
+    required this.onWordTap,
+    required this.onReplay,
+    required this.onPhraseAdd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Only show if enabled
+    if (!pp.onVideoSubtitlesEnabled) return const SizedBox.shrink();
+
+    // Only show in fullscreen (approximate check: landscape mode in player usually means fullscreen or near-fullscreen)
+    // A better way is to check the actual fullscreen state if we can, but since MaterialVideoControls 
+    // handles it internally, we check if the current orientation is landscape.
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    if (!isLandscape) return const SizedBox.shrink();
+
+    final en = pp.currentEnglishLine;
+    final ru = pp.currentRussianLine;
+    if (en == null && ru == null) return const SizedBox.shrink();
+
+    return Positioned(
+      left: 16,
+      right: 16,
+      bottom: pp.subtitleBottomPadding, 
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // English (Tappable)
+          if (en != null)
+            _OverlayTextWrapper(
+              child: Padding(
+                padding: EdgeInsets.all(12 * pp.subtitleScale),
+                child: TappableSubtitleText(
+                  line: en,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20 * pp.subtitleScale,
+                    fontWeight: FontWeight.w700,
+                    shadows: const [Shadow(blurRadius: 4, color: Colors.black)],
+                  ),
+                  onWordTap: onWordTap,
+                  accentColor: Colors.yellow,
+                ),
+              ),
+            ),
+          
+          // Russian (Simple)
+          if (pp.showTranslation && (ru != null || en?.translation != null))
+            _OverlayTextWrapper(
+              isRussian: true,
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                    horizontal: 16 * pp.subtitleScale,
+                    vertical: 8 * pp.subtitleScale),
+                child: Text(
+                  ru?.text ?? en?.translation ?? '',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16 * pp.subtitleScale,
+                    fontWeight: FontWeight.w500,
+                    shadows: const [Shadow(blurRadius: 4, color: Colors.black)],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OverlayTextWrapper extends StatelessWidget {
+  final Widget child;
+  final bool isRussian;
+  const _OverlayTextWrapper({required this.child, this.isRussian = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(isRussian ? 0.4 : 0.6),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: child,
+    );
+  }
+}
+
+class _FloatingControls extends StatelessWidget {
+  final Player player;
+  final bool isPlaying;
+
+  const _FloatingControls({required this.player, required this.isPlaying});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerHighest.withOpacity(0.85),
+          borderRadius: BorderRadius.circular(40),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.2),
+              blurRadius: 15,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              onPressed: () {
+                final target = player.state.position - const Duration(seconds: 5);
+                player.seek(target > Duration.zero ? target : Duration.zero);
+              },
+              icon: const Icon(Icons.replay_5_rounded),
+              iconSize: 28,
+            ),
+            const SizedBox(width: 8),
+            IconButton.filled(
+              onPressed: () => player.playOrPause(),
+              icon: Icon(
+                isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              ),
+              iconSize: 36,
+              style: IconButton.styleFrom(
+                fixedSize: const Size(64, 64),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              onPressed: () {
+                player.seek(player.state.position + const Duration(seconds: 5));
+              },
+              icon: const Icon(Icons.forward_5_rounded),
+              iconSize: 28,
+            ),
+            const SizedBox(width: 8),
+            PopupMenuButton<double>(
+              initialValue: context.read<PlayerProvider>().subtitleScale,
+              tooltip: 'Subtitle Size',
+              icon: const Icon(Icons.format_size_rounded),
+              onSelected: (scale) {
+                context.read<PlayerProvider>().setSubtitleScale(scale);
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(value: 0.8, child: Text('Small')),
+                const PopupMenuItem(value: 1.0, child: Text('Medium')),
+                const PopupMenuItem(value: 1.3, child: Text('Large')),
+                const PopupMenuItem(value: 1.6, child: Text('Extra Large')),
+              ],
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              onPressed: () => context.read<PlayerProvider>().toggleOnVideoSubtitles(),
+              icon: Icon(
+                context.watch<PlayerProvider>().onVideoSubtitlesEnabled
+                    ? Icons.subtitles_rounded
+                    : Icons.subtitles_off_rounded,
+              ),
+              color: context.watch<PlayerProvider>().onVideoSubtitlesEnabled
+                  ? cs.primary
+                  : cs.onSurfaceVariant.withOpacity(0.5),
+              tooltip: 'Toggle On-Video Subtitles',
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -557,6 +877,116 @@ class _Chip extends StatelessWidget {
                 .labelMedium
                 ?.copyWith(color: color, fontWeight: FontWeight.w600)),
       ]),
+    );
+  }
+}
+
+class _FullscreenSettingsOverlay extends StatefulWidget {
+  final PlayerProvider pp;
+  const _FullscreenSettingsOverlay({required this.pp});
+
+  @override
+  State<_FullscreenSettingsOverlay> createState() =>
+      _FullscreenSettingsOverlayState();
+}
+
+class _FullscreenSettingsOverlayState
+    extends State<_FullscreenSettingsOverlay> {
+  bool _visible = false;
+  Timer? _timer;
+
+  void _show() {
+    setState(() => _visible = true);
+    _timer?.cancel();
+    _timer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _visible = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+    if (!isLandscape) return const SizedBox.shrink();
+
+    return Positioned.fill(
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: _show,
+        child: Stack(
+          children: [
+            if (_visible)
+              Positioned(
+                top: 16,
+                right: 90, // Avoid overlapping standard controls
+                child: IconButton.filledTonal(
+                  onPressed: () {
+                    _show();
+                    _showSettingsBottomSheet(context);
+                  },
+                  icon: const Icon(Icons.settings_rounded),
+                  tooltip: 'Settings',
+                ).animate().fadeIn().scale(),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showSettingsBottomSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.subtitles_rounded),
+                const SizedBox(width: 12),
+                Text('Subtitle Position',
+                    style: Theme.of(context).textTheme.titleLarge),
+              ],
+            ),
+            const SizedBox(height: 24),
+            Text('Height from bottom',
+                style: Theme.of(context).textTheme.bodyMedium),
+            Consumer<PlayerProvider>(
+              builder: (context, pp, _) => Slider(
+                value: pp.subtitleBottomPadding,
+                min: 20,
+                max: 300,
+                onChanged: (v) => pp.setSubtitleBottomPadding(v),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('Scale', style: Theme.of(context).textTheme.bodyMedium),
+            Consumer<PlayerProvider>(
+              builder: (context, pp, _) => Slider(
+                value: pp.subtitleScale,
+                min: 0.5,
+                max: 2.0,
+                onChanged: (v) => pp.setSubtitleScale(v),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
     );
   }
 }

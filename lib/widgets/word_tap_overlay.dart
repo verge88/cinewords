@@ -1,17 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import '../services/dictionary_service.dart';
 
 class WordTapOverlay extends StatefulWidget {
   final String word;
+  final String? prefilledTranslation;
   final String? contextSentence;
   final String? contextVideoId;
   final int? contextTimestampMs;
-  final void Function(String word, String? translation) onAddToVocabulary;
+  final void Function(String word, String? translation, String? phonetic) onAddToVocabulary;
   final VoidCallback onSpeak;
 
   const WordTapOverlay({
     super.key,
     required this.word,
+    this.prefilledTranslation,
     this.contextSentence,
     this.contextVideoId,
     this.contextTimestampMs,
@@ -25,30 +28,40 @@ class WordTapOverlay extends StatefulWidget {
 
 class _WordTapOverlayState extends State<WordTapOverlay> {
   String? _translation;
+  String? _phonetic;
   bool _isLoadingTranslation = true;
   final _translationController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    if (widget.prefilledTranslation != null) {
+      _translation = widget.prefilledTranslation;
+      _translationController.text = widget.prefilledTranslation!;
+    }
     _loadTranslation();
   }
 
   Future<void> _loadTranslation() async {
-    // Simple dictionary lookup — in production, use a proper
-    // translation API (Google Translate, DeepL, etc.)
-    // For now we use a placeholder approach
+    // Only load translation from network if we don't have a prefilled one.
+    // However, we still might want to load phonetics.
+    if (!mounted) return;
+    
     try {
-      // You could integrate `translator` package here:
-      // final translator = GoogleTranslator();
-      // final result = await translator.translate(widget.word, from: 'en', to: 'ru');
-      // _translation = result.text;
-
-      // Placeholder: show a prompt for manual translation
-      await Future.delayed(const Duration(milliseconds: 500));
-      _translation = null; // Will ask user to type
+      final res = await DictionaryService.lookupWord(widget.word);
+      if (mounted) {
+        setState(() {
+          if (_translation == null || widget.prefilledTranslation == null) {
+             _translation = res.translation;
+             if (_translation != null) {
+                _translationController.text = _translation!;
+             }
+          }
+          _phonetic = res.phonetic;
+        });
+      }
     } catch (e) {
-      _translation = null;
+      debugPrint('Error loading translation/phonetic: $e');
     }
 
     if (mounted) {
@@ -76,12 +89,25 @@ class _WordTapOverlayState extends State<WordTapOverlay> {
           Row(
             children: [
               Expanded(
-                child: Text(
-                  widget.word,
-                  style: tt.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: cs.primary,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.word,
+                      style: tt.headlineMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: cs.primary,
+                      ),
+                    ),
+                    if (_phonetic != null)
+                      Text(
+                        '[$_phonetic]',
+                        style: tt.bodyLarge?.copyWith(
+                          color: cs.primary.withOpacity(0.7),
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                  ],
                 ),
               ),
               // Speak button
@@ -92,7 +118,7 @@ class _WordTapOverlayState extends State<WordTapOverlay> {
             ],
           ).animate().fadeIn().slideY(begin: 0.1),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
 
           // Context sentence
           if (widget.contextSentence != null)
@@ -166,6 +192,7 @@ class _WordTapOverlayState extends State<WordTapOverlay> {
               widget.onAddToVocabulary(
                 widget.word,
                 translation.isNotEmpty ? translation : null,
+                _phonetic, // Passed phonetic option!
               );
             },
             icon: const Icon(Icons.add_rounded),

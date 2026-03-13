@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import 'register_screen.dart';
@@ -58,18 +59,12 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: Container(
                     width: 88,
                     height: 88,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [cs.primary, cs.tertiary],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
+                    child: ClipRRect(
                       borderRadius: BorderRadius.circular(28),
-                    ),
-                    child: Icon(
-                      Icons.play_lesson_rounded,
-                      size: 42,
-                      color: cs.onPrimary,
+                      child: SvgPicture.asset(
+                        'assets/images/cinewords-logo-v1.svg',
+                        fit: BoxFit.cover,
+                      ),
                     ),
                   ),
                 ).animate().scale(duration: 500.ms, curve: Curves.easeOutBack),

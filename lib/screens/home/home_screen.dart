@@ -9,6 +9,7 @@ import '../../models/user_progress.dart';
 import '../../widgets/video_card.dart';
 import '../../widgets/progress_ring.dart';
 import '../catalog/catalog_screen.dart';
+import '../catalog/favorites_screen.dart';
 import '../player/player_screen.dart';
 import '../vocabulary/vocabulary_screen.dart';
 import '../profile/profile_screen.dart';
@@ -129,18 +130,86 @@ class _HomeTab extends StatelessWidget {
                     .slideY(begin: 0.1),
                 const SizedBox(height: 28),
 
-                // ─── Featured Videos ───
-                Text('Featured', style: tt.titleLarge)
-                    .animate(delay: 200.ms)
-                    .fadeIn(),
-                const SizedBox(height: 12),
+                // ─── Favorites ───
+                if (videoProvider.favoriteVideos.isNotEmpty) ...[
+                  _buildSectionHeader(
+                    context, 
+                    'Favorites', 
+                    onSeeAll: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 280,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: videoProvider.favoriteVideos.length,
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      itemBuilder: (context, index) {
+                        final video = videoProvider.favoriteVideos[index];
+                        return Container(
+                          width: 300,
+                          margin: const EdgeInsets.only(right: 16),
+                          child: VideoCard(
+                            video: video,
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => PlayerScreen(video: video),
+                              ),
+                            ),
+                          ),
+                        ).animate(delay: (200 + index * 80).ms).fadeIn().slideX(begin: 0.1);
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                ],
 
-                if (videoProvider.isLoading)
+                // ─── Featured Videos ───
+                _buildSectionHeader(context, 'Featured', onSeeAll: () {}),
+                const SizedBox(height: 12),
+                if (videoProvider.isLoading && videoProvider.featuredVideos.isEmpty)
                   const Center(child: CircularProgressIndicator())
                 else if (videoProvider.featuredVideos.isEmpty)
                   _buildEmptyState(context)
                 else
-                  ...videoProvider.featuredVideos.asMap().entries.map(
+                  SizedBox(
+                    height: 280,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: videoProvider.featuredVideos.length,
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      itemBuilder: (context, index) {
+                        final video = videoProvider.featuredVideos[index];
+                        return Container(
+                          width: 300,
+                          margin: const EdgeInsets.only(right: 16),
+                          child: VideoCard(
+                            video: video,
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => PlayerScreen(video: video),
+                              ),
+                            ),
+                          ),
+                        ).animate(delay: (300 + index * 80).ms).fadeIn().slideX(begin: 0.1);
+                      },
+                    ),
+                  ),
+
+                const SizedBox(height: 32),
+
+                // ─── Trending Videos ───
+                _buildSectionHeader(context, 'Trending', onSeeAll: () {}),
+                const SizedBox(height: 12),
+                if (videoProvider.isLoading && videoProvider.trendingVideos.isEmpty)
+                  const Center(child: CircularProgressIndicator())
+                else
+                  ...videoProvider.trendingVideos.take(5).toList().asMap().entries.map(
                     (entry) => Padding(
                       padding: const EdgeInsets.only(bottom: 12),
                       child: VideoCard(
@@ -152,23 +221,44 @@ class _HomeTab extends StatelessWidget {
                           ),
                         ),
                       ),
-                    )
-                        .animate(delay: (300 + entry.key * 80).ms)
-                        .fadeIn()
-                        .slideX(begin: 0.05),
+                    ).animate(delay: (400 + entry.key * 80).ms).fadeIn().slideX(begin: 0.05),
                   ),
 
                 const SizedBox(height: 24),
 
                 // ─── Add YouTube Video ───
                 _buildAddVideoButton(context)
-                    .animate(delay: 500.ms)
+                    .animate(delay: 600.ms)
                     .fadeIn(),
               ]),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSectionHeader(BuildContext context, String title, {VoidCallback? onSeeAll}) {
+    final tt = Theme.of(context).textTheme;
+    final cs = Theme.of(context).colorScheme;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(title, style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+        if (onSeeAll != null)
+          TextButton(
+            onPressed: onSeeAll,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('See all', style: tt.labelLarge?.copyWith(color: cs.primary)),
+                const SizedBox(width: 4),
+                Icon(Icons.arrow_forward_ios_rounded, size: 12, color: cs.primary),
+              ],
+            ),
+          ),
+      ],
     );
   }
 

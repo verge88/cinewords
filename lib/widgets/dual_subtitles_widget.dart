@@ -8,6 +8,7 @@ class DualSubtitlesWidget extends StatelessWidget {
   final bool showTranslation;
   final void Function(String word, SubtitleLine line) onWordTap;
   final VoidCallback onReplay;
+  final VoidCallback onPhraseAdd;
 
   const DualSubtitlesWidget({
     super.key,
@@ -16,6 +17,7 @@ class DualSubtitlesWidget extends StatelessWidget {
     required this.showTranslation,
     required this.onWordTap,
     required this.onReplay,
+    required this.onPhraseAdd,
   });
 
     @override
@@ -54,7 +56,7 @@ class DualSubtitlesWidget extends StatelessWidget {
               children: [
                 // English subtitle with tappable words
                 if (englishLine != null)
-                  _TappableSubtitleText(
+                  TappableSubtitleText(
                     line: englishLine!,
                     style: tt.bodyLarge!.copyWith(
                       fontWeight: FontWeight.w600,
@@ -97,7 +99,7 @@ class DualSubtitlesWidget extends StatelessWidget {
             ),
           ),
 
-          // Replay button
+          // Replay & Add Phrase buttons
           if (englishLine != null)
             Column(
               mainAxisSize: MainAxisSize.min,
@@ -109,6 +111,16 @@ class DualSubtitlesWidget extends StatelessWidget {
                   style: IconButton.styleFrom(
                     backgroundColor: cs.primaryContainer.withOpacity(0.5),
                     foregroundColor: cs.primary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                IconButton(
+                  onPressed: onPhraseAdd,
+                  icon: const Icon(Icons.bookmark_add_outlined),
+                  tooltip: 'Add Phrase',
+                  style: IconButton.styleFrom(
+                    backgroundColor: cs.tertiaryContainer.withOpacity(0.5),
+                    foregroundColor: cs.tertiary,
                   ),
                 ),
               ],
@@ -127,13 +139,14 @@ class DualSubtitlesWidget extends StatelessWidget {
 }
 
 /// Renders subtitle text with individually tappable words
-class _TappableSubtitleText extends StatelessWidget {
+class TappableSubtitleText extends StatelessWidget {
   final SubtitleLine line;
   final TextStyle style;
   final void Function(String word, SubtitleLine line) onWordTap;
   final Color accentColor;
 
-  const _TappableSubtitleText({
+  const TappableSubtitleText({
+    super.key,
     required this.line,
     required this.style,
     required this.onWordTap,

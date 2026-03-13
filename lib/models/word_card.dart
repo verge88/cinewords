@@ -15,6 +15,7 @@ class WordCard extends Equatable {
   final double easeFactor;
   final int intervalDays;
   final String status;
+  final String type;
 
   const WordCard({
     required this.id,
@@ -31,6 +32,7 @@ class WordCard extends Equatable {
     this.easeFactor = 2.5,
     this.intervalDays = 1,
     this.status = 'new',
+    this.type = 'word',
   });
 
   factory WordCard.fromJson(Map<String, dynamic> json) {
@@ -49,6 +51,7 @@ class WordCard extends Equatable {
       easeFactor: (json['ease_factor'] as num?)?.toDouble() ?? 2.5,
       intervalDays: json['interval_days'] ?? 1,
       status: json['status'] ?? 'new',
+      type: json['item_type'] ?? 'word',
     );
   }
 

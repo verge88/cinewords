@@ -9,17 +9,23 @@ class VideoProvider extends ChangeNotifier {
   List<VideoItem> _featuredVideos = [];
   List<VideoItem> _searchResults = [];
   List<VideoItem> _trendingVideos = [];
+  List<VideoItem> _favoriteVideos = [];
   final Map<String, List<VideoItem>> _categoryVideos = {};
   bool _isLoading = false;
   String? _error;
   String? _nextPageToken;
+  Set<String> _favoriteVideoIds = {};
 
   List<VideoItem> get featuredVideos => _featuredVideos;
   List<VideoItem> get searchResults => _searchResults;
   List<VideoItem> get trendingVideos => _trendingVideos;
+  List<VideoItem> get favoriteVideos => _favoriteVideos;
   bool get isLoading => _isLoading;
   String? get error => _error;
   bool get hasMore => _nextPageToken != null;
+  Set<String> get favoriteVideoIds => _favoriteVideoIds;
+  
+  bool isFavorite(String videoId) => _favoriteVideoIds.contains(videoId);
 
   List<VideoItem> getByCategory(String cat) => _categoryVideos[cat] ?? [];
 
@@ -30,7 +36,13 @@ class VideoProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Load favorites IDs first for UI status
+      _favoriteVideoIds = (await SupabaseService.getFavoriteIds()).toSet();
+      
       _featuredVideos = await SupabaseService.getFeaturedVideos();
+
+      // Load full favorites list
+      await loadFavorites();
 
       // If Supabase is empty, fetch trending education videos from YouTube
       if (_featuredVideos.isEmpty) {
@@ -39,6 +51,16 @@ class VideoProvider extends ChangeNotifier {
           maxResults: 10,
         );
       }
+
+      // If still empty (e.g., API limits or region issues), fallback to a search for quality learning content
+      if (_featuredVideos.isEmpty) {
+        final searchResult = await _ytDataService.searchVideos(
+          'english learning lessons with subtitles',
+          maxResults: 10,
+          order: 'viewCount',
+        );
+        _featuredVideos = searchResult.videos;
+      }
     } catch (e) {
       _error = e.toString();
       debugPrint('VideoProvider: Error loading featured: $e');
@@ -46,6 +68,16 @@ class VideoProvider extends ChangeNotifier {
 
     _isLoading = false;
     notifyListeners();
+  }
+
+  Future<void> loadFavorites() async {
+    try {
+      _favoriteVideoIds = (await SupabaseService.getFavoriteIds()).toSet();
+      _favoriteVideos = await SupabaseService.getFavoriteVideos();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('VideoProvider: Error loading favorites: $e');
+    }
   }
 
   /// Load trending English learning videos
@@ -223,6 +255,59 @@ class VideoProvider extends ChangeNotifier {
     }
 
     return input; // Assume it's an ID
+  }
+
+  Future<void> toggleFavorite(VideoItem video) async {
+    VideoItem targetVideo = video;
+    
+    // If video is from YouTube search/trending, it might not be in our DB yet
+    if (targetVideo.id.isEmpty) {
+      try {
+        targetVideo = await SupabaseService.addVideo(targetVideo);
+        // Replace in existing lists so UI reflects the new object with ID
+        _updateVideoInLists(targetVideo);
+      } catch (e) {
+        debugPrint('VideoProvider: Failed to auto-save video for favorite: $e');
+        return; 
+      }
+    }
+
+    final isFav = isFavorite(targetVideo.id);
+    if (isFav) {
+      _favoriteVideoIds.remove(targetVideo.id);
+      _favoriteVideos.removeWhere((v) => v.id == targetVideo.id);
+    } else {
+      _favoriteVideoIds.add(targetVideo.id);
+      _favoriteVideos.insert(0, targetVideo);
+    }
+    notifyListeners();
+
+    try {
+      await SupabaseService.toggleFavorite(targetVideo.id, !isFav);
+    } catch (e) {
+      // Revert on error
+      if (isFav) {
+        _favoriteVideoIds.add(targetVideo.id);
+        _favoriteVideos.insert(0, targetVideo);
+      } else {
+        _favoriteVideoIds.remove(targetVideo.id);
+        _favoriteVideos.removeWhere((v) => v.id == targetVideo.id);
+      }
+      notifyListeners();
+    }
+  }
+
+  void _updateVideoInLists(VideoItem newVideo) {
+    // Helper to find and replace video in all active lists
+    void replaceInList(List<VideoItem> list) {
+      final idx = list.indexWhere((v) => v.youtubeId == newVideo.youtubeId);
+      if (idx != -1) list[idx] = newVideo;
+    }
+
+    replaceInList(_featuredVideos);
+    replaceInList(_trendingVideos);
+    replaceInList(_searchResults);
+    _categoryVideos.values.forEach(replaceInList);
   }
 
   @override

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
@@ -17,15 +18,13 @@ class SplashScreen extends StatelessWidget {
             Container(
               width: 120,
               height: 120,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [cs.primary, cs.tertiary],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
+              child: ClipRRect(
                 borderRadius: BorderRadius.circular(36),
+                child: SvgPicture.asset(
+                  'assets/images/cinewords-logo-v1.svg',
+                  fit: BoxFit.cover,
+                ),
               ),
-              child: Icon(Icons.play_lesson_rounded, size: 56, color: cs.onPrimary),
             )
                 .animate()
                 .scale(duration: 600.ms, curve: Curves.easeOutBack)

@@ -17,6 +17,7 @@ class _VocabularyScreenState extends State<VocabularyScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   bool _isReviewMode = false;
+  String _selectedType = 'word';
 
   @override
   void initState() {
@@ -33,6 +34,8 @@ class _VocabularyScreenState extends State<VocabularyScreen>
     if (_isReviewMode) {
       return _buildReviewMode(vocab);
     }
+
+    final currentList = _selectedType == 'word' ? vocab.wordsOnly : vocab.phrasesOnly;
 
     return Scaffold(
       body: NestedScrollView(
@@ -62,18 +65,38 @@ class _VocabularyScreenState extends State<VocabularyScreen>
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-              child: Row(
-                children: [
-                  _StatBadge('New', vocab.newCount, cs.tertiary),
-                  const SizedBox(width: 8),
-                  _StatBadge('Learning', vocab.learningCount, cs.primary),
-                  const SizedBox(width: 8),
-                  _StatBadge('Review', vocab.reviewCount, cs.secondary),
-                  const SizedBox(width: 8),
-                  _StatBadge('Mastered', vocab.masteredCount, Colors.green),
-                ],
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                     _StatBadge('New', currentList.where((w) => w.status == 'new').length, cs.tertiary),
+                    const SizedBox(width: 8),
+                    _StatBadge('Learning', currentList.where((w) => w.status == 'learning').length, cs.primary),
+                    const SizedBox(width: 8),
+                    _StatBadge('Review', currentList.where((w) => w.status == 'review').length, cs.secondary),
+                    const SizedBox(width: 8),
+                    _StatBadge('Mastered', currentList.where((w) => w.status == 'mastered').length, Colors.green),
+                  ],
+                ),
               ),
             ).animate().fadeIn(),
+          ),
+
+          // Type toggle
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'word', label: Text('Words'), icon: Icon(Icons.abc_rounded)),
+                  ButtonSegment(value: 'phrase', label: Text('Phrases'), icon: Icon(Icons.format_quote_rounded)),
+                ],
+                selected: {_selectedType},
+                onSelectionChanged: (set) {
+                  setState(() => _selectedType = set.first);
+                },
+              ),
+            ),
           ),
 
           SliverPersistentHeader(
@@ -97,16 +120,16 @@ class _VocabularyScreenState extends State<VocabularyScreen>
         body: TabBarView(
           controller: _tabController,
           children: [
-            _buildWordList(vocab.allWords, vocab),
+            _buildWordList(currentList, vocab),
             _buildWordList(
-                vocab.allWords.where((w) => w.status == 'new').toList(), vocab),
+                currentList.where((w) => w.status == 'new').toList(), vocab),
             _buildWordList(
-                vocab.allWords
+                currentList
                     .where((w) => w.status == 'learning' || w.status == 'review')
                     .toList(),
                 vocab),
             _buildWordList(
-                vocab.allWords.where((w) => w.status == 'mastered').toList(), vocab),
+                currentList.where((w) => w.status == 'mastered').toList(), vocab),
           ],
         ),
       ),
@@ -164,10 +187,9 @@ class _VocabularyScreenState extends State<VocabularyScreen>
     );
   }
 
-  // ─── REVIEW MODE (Flashcards) ───
+  // ─── REVIEW MODE (Flashcards + Quiz) ───
   Widget _buildReviewMode(VocabularyProvider vocab) {
     final card = vocab.currentReviewCard;
-    final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
 
     return Scaffold(
@@ -176,34 +198,94 @@ class _VocabularyScreenState extends State<VocabularyScreen>
           icon: const Icon(Icons.close),
           onPressed: () => setState(() => _isReviewMode = false),
         ),
-        title: Text(
-          '${vocab.currentReviewIndex + 1} / ${vocab.reviewQueue.length}',
-        ),
-      ),
-      body: card == null
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.check_circle_outline,
-                      size: 80, color: Colors.green),
-                  const SizedBox(height: 16),
-                  Text('All done!', style: tt.headlineSmall),
-                  const SizedBox(height: 8),
-                  Text('Great job! Come back later for more reviews.'),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    onPressed: () => setState(() => _isReviewMode = false),
-                    child: const Text('Back to Vocabulary'),
-                  ),
-                ],
-              ),
-            )
-          : _ReviewCard(
-              card: card,
-              onRate: (quality) => vocab.reviewCurrentWord(quality),
+        title: Column(
+          children: [
+            Text(
+              vocab.currentExerciseType.replaceAll('_', ' ').toUpperCase(),
+              style: tt.labelSmall?.copyWith(letterSpacing: 1.2),
             ),
+            Text(
+              '${vocab.currentReviewIndex + 1} / ${vocab.reviewQueue.length}',
+              style: tt.titleSmall,
+            ),
+          ],
+        ),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.psychology_outlined),
+            initialValue: vocab.currentExerciseType,
+            onSelected: vocab.setExerciseType,
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(value: 'flashcard', child: Text('Flashcards')),
+              const PopupMenuItem(value: 'multiple_choice', child: Text('Multiple Choice')),
+              const PopupMenuItem(value: 'typing', child: Text('Typing Practice')),
+              const PopupMenuItem(value: 'word_builder', child: Text('Word Builder')),
+            ],
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Progress bar
+          LinearProgressIndicator(
+            value: vocab.reviewQueue.isNotEmpty 
+                ? (vocab.currentReviewIndex / vocab.reviewQueue.length) 
+                : 1.0,
+            backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+          ),
+          Expanded(
+            child: card == null
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.check_circle_outline,
+                            size: 80, color: Colors.green),
+                        const SizedBox(height: 16),
+                        Text('All done!', style: tt.headlineSmall),
+                        const SizedBox(height: 8),
+                        const Text('Great job! Come back later for more reviews.'),
+                        const SizedBox(height: 24),
+                        FilledButton(
+                          onPressed: () => setState(() => _isReviewMode = false),
+                          child: const Text('Back to Vocabulary'),
+                        ),
+                      ],
+                    ),
+                  )
+                : _buildActiveExercise(vocab, card),
+          ),
+        ],
+      ),
     );
+  }
+
+  Widget _buildActiveExercise(VocabularyProvider vocab, WordCard card) {
+    switch (vocab.currentExerciseType) {
+      case 'multiple_choice':
+        return _MultipleChoiceExercise(
+          card: card,
+          options: vocab.getMultipleChoiceOptions(card),
+          onRate: (quality) => vocab.reviewCurrentWord(quality),
+        );
+      case 'typing':
+        return _TypingExercise(
+          card: card,
+          onRate: (quality) => vocab.reviewCurrentWord(quality),
+        );
+      case 'word_builder':
+        return _WordBuilderExercise(
+          card: card,
+          onRate: (quality) => vocab.reviewCurrentWord(quality),
+        );
+      case 'flashcard':
+      default:
+        return _ReviewCard(
+          card: card,
+          onRate: (quality) => vocab.reviewCurrentWord(quality),
+        );
+    }
   }
 
   @override
@@ -222,8 +304,8 @@ class _StatBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
+    return Container(
+      width: 85,
         padding: const EdgeInsets.symmetric(vertical: 10),
         decoration: BoxDecoration(
           color: color.withOpacity(0.1),
@@ -246,9 +328,8 @@ class _StatBadge extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
+      );
+    }
 }
 
 class _TabBarDelegate extends SliverPersistentHeaderDelegate {
@@ -422,6 +503,322 @@ class _ReviewCardState extends State<_ReviewCard> {
         ],
       ),
     );
+  }
+}
+
+// ─── Multiple Choice Exercise ───
+class _MultipleChoiceExercise extends StatefulWidget {
+  final WordCard card;
+  final List<String> options;
+  final Function(int) onRate;
+
+  const _MultipleChoiceExercise({
+    required this.card,
+    required this.options,
+    required this.onRate,
+  });
+
+  @override
+  State<_MultipleChoiceExercise> createState() => _MultipleChoiceExerciseState();
+}
+
+class _MultipleChoiceExerciseState extends State<_MultipleChoiceExercise> {
+  String? _selectedOption;
+  bool _isCorrect = false;
+
+  void _handleSelect(String option) {
+    if (_selectedOption != null) return;
+    setState(() {
+      _selectedOption = option;
+      _isCorrect = option == widget.card.translation;
+    });
+
+    Future.delayed(const Duration(milliseconds: 600), () {
+      widget.onRate(_isCorrect ? 4 : 0);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        children: [
+          const Spacer(),
+          Text(
+            widget.card.word,
+            style: tt.displaySmall?.copyWith(fontWeight: FontWeight.w800),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          if (widget.card.phonetic != null)
+            Text(widget.card.phonetic!,
+                style: tt.bodyLarge?.copyWith(color: cs.onSurfaceVariant)),
+          const Spacer(),
+          ...widget.options.map((opt) {
+            final isSelected = _selectedOption == opt;
+            final isCorrectOpt = opt == widget.card.translation;
+            
+            Color bgColor = cs.surfaceContainerLow;
+            Color textColor = cs.onSurface;
+            
+            if (isSelected) {
+              bgColor = _isCorrect ? Colors.green.withOpacity(0.2) : Colors.red.withOpacity(0.2);
+              textColor = _isCorrect ? Colors.green : Colors.red;
+            } else if (_selectedOption != null && isCorrectOpt) {
+              bgColor = Colors.green.withOpacity(0.1);
+              textColor = Colors.green;
+            }
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: InkWell(
+                onTap: () => _handleSelect(opt),
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 24),
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: isSelected ? textColor : cs.outlineVariant.withOpacity(0.3),
+                      width: isSelected ? 2 : 1,
+                    ),
+                  ),
+                  child: Text(
+                    opt,
+                    style: tt.bodyLarge?.copyWith(
+                      color: textColor,
+                      fontWeight: isSelected ? FontWeight.bold : null,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+            );
+          }),
+          const Spacer(),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Typing Exercise ───
+class _TypingExercise extends StatefulWidget {
+  final WordCard card;
+  final Function(int) onRate;
+
+  const _TypingExercise({required this.card, required this.onRate});
+
+  @override
+  State<_TypingExercise> createState() => _TypingExerciseState();
+}
+
+class _TypingExerciseState extends State<_TypingExercise> {
+  final TextEditingController _controller = TextEditingController();
+  bool _isAnswered = false;
+  bool _isCorrect = false;
+
+  void _check() {
+    if (_isAnswered) return;
+    final input = _controller.text.trim().toLowerCase();
+    final correct = (widget.card.translation ?? '').trim().toLowerCase();
+    
+    setState(() {
+      _isAnswered = true;
+      _isCorrect = input == correct;
+    });
+
+    Future.delayed(const Duration(milliseconds: 800), () {
+      widget.onRate(_isCorrect ? 5 : 0);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        children: [
+          const Spacer(),
+          Text(
+            widget.card.word,
+            style: tt.displaySmall?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 32),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: 'Type translation...',
+              filled: true,
+              fillColor: _isAnswered 
+                  ? (_isCorrect ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1))
+                  : cs.surfaceContainerLow,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+              suffixIcon: _isAnswered 
+                  ? Icon(_isCorrect ? Icons.check_circle : Icons.error, 
+                         color: _isCorrect ? Colors.green : Colors.red)
+                  : null,
+            ),
+            onSubmitted: (_) => _check(),
+            enabled: !_isAnswered,
+          ),
+          if (_isAnswered && !_isCorrect) ...[
+            const SizedBox(height: 12),
+            Text('Correct: ${widget.card.translation}', 
+                 style: tt.bodyMedium?.copyWith(color: Colors.green, fontWeight: FontWeight.bold)),
+          ],
+          const Spacer(),
+          FilledButton(
+            onPressed: _check,
+            style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 56)),
+            child: const Text('Check'),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Word Builder Exercise ───
+class _WordBuilderExercise extends StatefulWidget {
+  final WordCard card;
+  final Function(int) onRate;
+
+  const _WordBuilderExercise({required this.card, required this.onRate});
+
+  @override
+  State<_WordBuilderExercise> createState() => _WordBuilderExerciseState();
+}
+
+class _WordBuilderExerciseState extends State<_WordBuilderExercise> {
+  late List<String> _shuffled;
+  final List<String> _selected = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  @override
+  void didUpdateWidget(covariant _WordBuilderExercise oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.card.id != widget.card.id) _init();
+  }
+
+  void _init() {
+    _shuffled = (widget.card.word).split('')..shuffle();
+    _selected.clear();
+  }
+
+  void _handleTap(int index) {
+    setState(() {
+      _selected.add(_shuffled[index]);
+      _shuffled.removeAt(index);
+    });
+
+    if (_shuffled.isEmpty) {
+      final built = _selected.join('');
+      final isCorrect = built == widget.card.word;
+      Future.delayed(const Duration(milliseconds: 500), () {
+        widget.onRate(isCorrect ? 4 : 0);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        children: [
+          const Spacer(),
+          Text(widget.card.translation ?? '—', style: tt.headlineMedium),
+          const SizedBox(height: 48),
+          
+          // Selection area
+          Container(
+            constraints: const BoxConstraints(minHeight: 80),
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: cs.outlineVariant.withOpacity(0.3)),
+            ),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: _selected.map((char) => _CharBadge(char: char, color: cs.primary)).toList(),
+            ),
+          ),
+          
+          const SizedBox(height: 48),
+          
+          // Options area
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            alignment: WrapAlignment.center,
+            children: List.generate(_shuffled.length, (i) {
+              return InkWell(
+                onTap: () => _handleTap(i),
+                borderRadius: BorderRadius.circular(12),
+                child: _CharBadge(char: _shuffled[i], color: cs.secondaryContainer, textColor: cs.onSecondaryContainer),
+              );
+            }),
+          ),
+          const Spacer(),
+          TextButton.icon(
+            onPressed: () => setState(_init),
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Reset'),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+}
+
+class _CharBadge extends StatelessWidget {
+  final String char;
+  final Color color;
+  final Color? textColor;
+
+  const _CharBadge({required this.char, required this.color, this.textColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        char,
+        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+          color: textColor ?? Colors.white,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    ).animate().scale(duration: 200.ms);
   }
 }
 

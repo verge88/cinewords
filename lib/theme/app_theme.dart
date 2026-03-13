@@ -41,6 +41,28 @@ class AppTheme {
     return _buildTheme(colorScheme, Brightness.dark);
   }
 
+  static ThemeData monochromeTheme() {
+    const colorScheme = ColorScheme(
+      brightness: Brightness.dark,
+      primary: Colors.white,
+      onPrimary: Colors.black,
+      secondary: Color(0xFFEEEEEE),
+      onSecondary: Colors.black,
+      error: Color(0xFFCF6679),
+      onError: Colors.black,
+      surface: Colors.black,
+      onSurface: Colors.white,
+      surfaceContainerLow: Color(0xFF121212),
+      surfaceContainer: Color(0xFF1E1E1E),
+      surfaceContainerHighest: Color(0xFF2C2C2C),
+      onSurfaceVariant: Color(0xFFB0B0B0),
+      outline: Color(0xFF404040),
+      outlineVariant: Color(0xFF606060),
+    );
+
+    return _buildTheme(colorScheme, Brightness.dark);
+  }
+
   static ThemeData _buildTheme(ColorScheme colorScheme, Brightness brightness) {
     final textTheme = GoogleFonts.interTextTheme(
       brightness == Brightness.light

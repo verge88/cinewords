@@ -9,6 +9,8 @@ class VocabularyProvider extends ChangeNotifier {
   int _currentReviewIndex = 0;
 
   List<WordCard> get allWords => _allWords;
+  List<WordCard> get wordsOnly => _allWords.where((w) => w.type == 'word').toList();
+  List<WordCard> get phrasesOnly => _allWords.where((w) => w.type == 'phrase').toList();
   List<WordCard> get reviewQueue => _reviewQueue;
   bool get isLoading => _isLoading;
   int get currentReviewIndex => _currentReviewIndex;
@@ -21,6 +23,29 @@ class VocabularyProvider extends ChangeNotifier {
   int get learningCount => _allWords.where((w) => w.status == 'learning').length;
   int get reviewCount => _allWords.where((w) => w.status == 'review').length;
   int get masteredCount => _allWords.where((w) => w.status == 'mastered').length;
+
+  String _currentExerciseType = 'flashcard'; // flashcard, multiple_choice, typing, word_builder
+  String get currentExerciseType => _currentExerciseType;
+
+  void setExerciseType(String type) {
+    _currentExerciseType = type;
+    notifyListeners();
+  }
+
+  List<String> getMultipleChoiceOptions(WordCard card) {
+    final correct = card.translation ?? '';
+    final distractors = _allWords
+        .where((w) => w.id != card.id && w.translation != null && w.translation!.isNotEmpty)
+        .map((w) => w.translation!)
+        .toSet()
+        .toList();
+    
+    distractors.shuffle();
+    final options = distractors.take(3).toList();
+    options.add(correct);
+    options.shuffle();
+    return options;
+  }
 
   Future<void> loadAll({bool silent = false}) async {
     if (!silent) {
@@ -55,17 +80,21 @@ class VocabularyProvider extends ChangeNotifier {
   Future<void> addWord({
     required String word,
     String? translation,
+    String? phonetic,
     String? contextSentence,
     String? contextVideoId,
     int? contextTimestampMs,
+    String type = 'word',
   }) async {
     try {
       final card = await SupabaseService.addWord(
         word: word,
         translation: translation,
+        phonetic: phonetic,
         contextSentence: contextSentence,
         contextVideoId: contextVideoId,
         contextTimestampMs: contextTimestampMs,
+        type: type,
       );
       await loadAll(silent: true);
     } catch (e) {

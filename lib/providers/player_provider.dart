@@ -3,6 +3,7 @@ import '../models/subtitle_line.dart';
 import '../models/video_item.dart';
 import '../services/youtube_service.dart';
 import '../services/supabase_service.dart';
+import '../services/dictionary_service.dart';
 
 class PlayerProvider extends ChangeNotifier {
   final YouTubeService _ytService = YouTubeService();
@@ -16,6 +17,9 @@ class PlayerProvider extends ChangeNotifier {
   bool _isPlaying = false;
   bool _showTranslation = true;
   double _playbackSpeed = 1.0;
+  double _subtitleScale = 1.0;
+  bool _onVideoSubtitlesEnabled = true;
+  double _subtitleBottomPadding = 80.0;
   bool _isLoadingSubs = false;
   String? _subtitleError;
 
@@ -28,6 +32,9 @@ class PlayerProvider extends ChangeNotifier {
   bool get isPlaying => _isPlaying;
   bool get showTranslation => _showTranslation;
   double get playbackSpeed => _playbackSpeed;
+  double get subtitleScale => _subtitleScale;
+  bool get onVideoSubtitlesEnabled => _onVideoSubtitlesEnabled;
+  double get subtitleBottomPadding => _subtitleBottomPadding;
   bool get isLoadingSubs => _isLoadingSubs;
   String? get subtitleError => _subtitleError;
 
@@ -77,7 +84,11 @@ class PlayerProvider extends ChangeNotifier {
     _loadRussianSubs(video);
   }
 
+  bool _isAutoTranslating = false;
+  bool get isAutoTranslating => _isAutoTranslating;
+
   Future<void> _loadRussianSubs(VideoItem video) async {
+    _isAutoTranslating = false;
     try {
       final c = await SupabaseService.getSubtitles(video.id, language: 'ru')
           .timeout(const Duration(seconds: 3));
@@ -94,12 +105,34 @@ class PlayerProvider extends ChangeNotifier {
         language: 'ru',
         dbVideoId: video.id,
       );
-      debugPrint('[Subs] RU subs: ${_russianSubs.length}');
+      debugPrint('[Subs] RU subs from YT: ${_russianSubs.length}');
       if (_russianSubs.isNotEmpty) {
         SupabaseService.saveSubtitles(_russianSubs).catchError((_) {});
+        notifyListeners();
+        return; // Success!
       }
-      notifyListeners();
     } catch (_) {}
+
+    // Fallback: Auto-translate english subtitles
+    if (_englishSubs.isNotEmpty) {
+      debugPrint('[Subs] Native RU subs not found. Auto-translating...');
+      _isAutoTranslating = true;
+      notifyListeners();
+
+      try {
+        _russianSubs = await DictionaryService.translateSubtitles(_englishSubs);
+        debugPrint('[Subs] Auto-translated ${_russianSubs.length} lines.');
+        if (_russianSubs.isNotEmpty) {
+          // Cache to Supabase for next time so we don't translate again
+          SupabaseService.saveSubtitles(_russianSubs).catchError((_) {});
+        }
+      } catch (e) {
+        debugPrint('[Subs] Auto-translation failed: $e');
+      }
+
+      _isAutoTranslating = false;
+      notifyListeners();
+    }
   }
 
   void updatePosition(Duration pos) {
@@ -135,6 +168,21 @@ class PlayerProvider extends ChangeNotifier {
 
   void setPlaybackSpeed(double s) {
     _playbackSpeed = s;
+    notifyListeners();
+  }
+
+  void setSubtitleScale(double s) {
+    _subtitleScale = s;
+    notifyListeners();
+  }
+
+  void toggleOnVideoSubtitles() {
+    _onVideoSubtitlesEnabled = !_onVideoSubtitlesEnabled;
+    notifyListeners();
+  }
+
+  void setSubtitleBottomPadding(double p) {
+    _subtitleBottomPadding = p;
     notifyListeners();
   }
 

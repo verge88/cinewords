@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:provider/provider.dart';
+import '../providers/video_provider.dart';
 import '../models/video_item.dart';
 
 class VideoCard extends StatelessWidget {
   final VideoItem video;
   final VoidCallback onTap;
+  final bool isCompact;
 
-  const VideoCard({super.key, required this.video, required this.onTap});
+  const VideoCard({
+    super.key,
+    required this.video,
+    required this.onTap,
+    this.isCompact = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -95,6 +103,27 @@ class VideoCard extends StatelessWidget {
                     ),
                   ),
 
+                  // Favorite toggle
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    child: Consumer<VideoProvider>(
+                      builder: (context, provider, _) {
+                        final isFav = provider.isFavorite(video.id);
+                        return IconButton(
+                          onPressed: () => provider.toggleFavorite(video),
+                          icon: Icon(
+                            isFav ? Icons.favorite_rounded : Icons.favorite_outline_rounded,
+                            color: isFav ? Colors.red : Colors.white,
+                          ),
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.black.withOpacity(0.2),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+
                   // Gradient overlay
                   Positioned.fill(
                     child: Container(
@@ -116,13 +145,14 @@ class VideoCard extends StatelessWidget {
 
             // Info
             Padding(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.all(isCompact ? 10 : 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     video.title,
-                    style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                    style: (isCompact ? tt.titleSmall : tt.titleMedium)
+                        ?.copyWith(fontWeight: FontWeight.w600),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -131,27 +161,29 @@ class VideoCard extends StatelessWidget {
                     children: [
                       if (video.channelName != null) ...[
                         Icon(Icons.person_outline,
-                            size: 14, color: cs.onSurfaceVariant),
+                            size: isCompact ? 12 : 14, color: cs.onSurfaceVariant),
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
                             video.channelName!,
                             style: tt.bodySmall
-                                ?.copyWith(color: cs.onSurfaceVariant),
+                                ?.copyWith(color: cs.onSurfaceVariant, fontSize: isCompact ? 10 : null),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        const SizedBox(width: 12),
+                        if (!isCompact) const SizedBox(width: 12),
                       ],
-                      Icon(Icons.text_fields_rounded,
-                          size: 14, color: cs.onSurfaceVariant),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${video.totalUniqueWords} words',
-                        style: tt.bodySmall
-                            ?.copyWith(color: cs.onSurfaceVariant),
-                      ),
+                      if (!isCompact) ...[
+                        Icon(Icons.text_fields_rounded,
+                            size: 14, color: cs.onSurfaceVariant),
+                        const SizedBox(width: 4),
+                        Text(
+                          '${video.totalUniqueWords} words',
+                          style: tt.bodySmall
+                              ?.copyWith(color: cs.onSurfaceVariant),
+                        ),
+                      ],
                     ],
                   ),
                 ],

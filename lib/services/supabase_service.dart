@@ -78,6 +78,65 @@ class SupabaseService {
     return VideoItem.fromJson(data);
   }
 
+  // ──────────────── FAVORITES ────────────────
+
+  static Future<void> toggleFavorite(String videoId, bool isFavorite) async {
+    final userId = SupabaseConfig.userId;
+    if (userId == null) return;
+
+    if (isFavorite) {
+      await _client.from('user_favorites').upsert({
+        'user_id': userId,
+        'video_id': videoId,
+      }, onConflict: 'user_id,video_id');
+    } else {
+      await _client
+          .from('user_favorites')
+          .delete()
+          .eq('user_id', userId)
+          .eq('video_id', videoId);
+    }
+  }
+
+  static Future<List<VideoItem>> getFavoriteVideos() async {
+    final userId = SupabaseConfig.userId;
+    if (userId == null) return [];
+
+    try {
+      // 1. Get IDs first
+      final ids = await getFavoriteIds();
+      if (ids.isEmpty) return [];
+
+      // 2. Fetch full video details for those IDs
+      final data = await _client
+          .from('videos')
+          .select()
+          .inFilter('id', ids);
+      
+      if (data == null) return [];
+      
+      final List<VideoItem> videos = (data as List).map((e) => VideoItem.fromJson(e)).toList();
+      
+      // Keep same order as IDs if possible, or just return them
+      return videos;
+    } catch (e) {
+      debugPrint('[SupabaseService] Error in getFavoriteVideos: $e');
+      return [];
+    }
+  }
+
+  static Future<List<String>> getFavoriteIds() async {
+    final userId = SupabaseConfig.userId;
+    if (userId == null) return [];
+
+    final data = await _client
+        .from('user_favorites')
+        .select('video_id')
+        .eq('user_id', userId);
+    
+    return (data as List).map((e) => e['video_id'] as String).toList();
+  }
+
     // ──────────────── SUBTITLES ────────────────
 
   static Future<List<SubtitleLine>> getSubtitles(
@@ -153,9 +212,11 @@ class SupabaseService {
   static Future<WordCard> addWord({
     required String word,
     String? translation,
+    String? phonetic,
     String? contextSentence,
     String? contextVideoId,
     int? contextTimestampMs,
+    String type = 'word',
   }) async {
     try {
       final userId = SupabaseConfig.userId;
@@ -169,9 +230,11 @@ class SupabaseService {
             'user_id': userId,
             'word': word.toLowerCase().trim(),
             'translation': translation,
+            'phonetic': phonetic,
             'context_sentence': contextSentence,
             'context_video_id': contextVideoId,
             'context_timestamp_ms': contextTimestampMs,
+            'item_type': type,
           }, onConflict: 'user_id,word')
           .select()
           .single();

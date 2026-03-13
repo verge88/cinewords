@@ -7,6 +7,8 @@ import '../../services/supabase_service.dart';
 import '../../models/user_progress.dart';
 import '../../widgets/progress_ring.dart';
 import '../../config/supabase_config.dart'; 
+import '../../providers/theme_provider.dart';
+import '../catalog/favorites_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -244,10 +246,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   onTap: () => _showGoalDialog(context),
                 ),
                 _SettingsTile(
-                  icon: Icons.dark_mode_outlined,
-                  title: 'Theme',
-                  subtitle: 'System',
-                  onTap: () {},
+                  icon: Icons.favorite_rounded,
+                  title: 'My Favorites',
+                  subtitle: 'Videos you saved for later',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+                  ),
+                ),
+                Consumer<ThemeProvider>(
+                  builder: (context, theme, _) => _SettingsTile(
+                    icon: Icons.palette_outlined,
+                    title: 'Theme',
+                    subtitle: theme.themeMode.name.toUpperCase(),
+                    onTap: () => _showThemeDialog(context),
+                  ),
                 ),
 
                 const SizedBox(height: 16),
@@ -337,6 +350,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
               child: const Text('Save'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  void _showThemeDialog(BuildContext context) {
+    final theme = context.read<ThemeProvider>();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Select Theme'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: AppThemeMode.values.map((mode) {
+            return RadioListTile<AppThemeMode>(
+              title: Text(mode == AppThemeMode.monochrome
+                  ? 'Black & White'
+                  : mode.name.toUpperCase()),
+              value: mode,
+              groupValue: theme.themeMode,
+              onChanged: (val) {
+                if (val != null) {
+                  theme.setThemeMode(val);
+                  Navigator.pop(ctx);
+                }
+              },
+            );
+          }).toList(),
         ),
       ),
     );
