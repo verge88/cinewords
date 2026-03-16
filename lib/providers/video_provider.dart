@@ -150,11 +150,28 @@ class VideoProvider extends ChangeNotifier {
   Future<void> search(String query) async {
     _isLoading = true;
     _nextPageToken = null;
+    _searchResults = [];
     notifyListeners();
 
     try {
+      final trimmed = query.trim();
+      final id = _extractVideoId(trimmed);
+
+      // If it looks like a YouTube ID (11 chars) and was extracted from a URL
+      // or looks specifically like an ID, try to fetch it directly
+      if (id.length == 11 && (trimmed.contains('youtube.com') || trimmed.contains('youtu.be') || trimmed == id)) {
+        final video = await _ytDataService.getVideoDetail(id);
+        if (video != null) {
+          _searchResults = [video];
+          _isLoading = false;
+          notifyListeners();
+          return;
+        }
+      }
+
+      // Otherwise do a general search
       final result = await _ytDataService.searchVideos(
-        '$query english subtitles',
+        trimmed,
         maxResults: 20,
       );
       _searchResults = result.videos;
@@ -176,7 +193,7 @@ class VideoProvider extends ChangeNotifier {
 
     try {
       final result = await _ytDataService.searchVideos(
-        '$query english subtitles',
+        query.trim(),
         maxResults: 20,
         pageToken: _nextPageToken,
       );

@@ -22,6 +22,9 @@ class PlayerProvider extends ChangeNotifier {
   double _subtitleBottomPadding = 80.0;
   bool _isLoadingSubs = false;
   String? _subtitleError;
+  
+  List<String> _availableQualities = [];
+  String? _selectedQuality;
 
   VideoItem? get currentVideo => _currentVideo;
   List<SubtitleLine> get englishSubs => _englishSubs;
@@ -37,6 +40,8 @@ class PlayerProvider extends ChangeNotifier {
   double get subtitleBottomPadding => _subtitleBottomPadding;
   bool get isLoadingSubs => _isLoadingSubs;
   String? get subtitleError => _subtitleError;
+  List<String> get availableQualities => _availableQualities;
+  String? get selectedQuality => _selectedQuality;
 
   Future<void> loadVideo(VideoItem video) async {
     _currentVideo = video;
@@ -191,6 +196,16 @@ class PlayerProvider extends ChangeNotifier {
       return _englishSubs[index].startDuration;
     }
     return null;
+  }
+
+  void setAvailableQualities(List<String> q) {
+    _availableQualities = q;
+    notifyListeners();
+  }
+
+  void setSelectedQuality(String? q) {
+    _selectedQuality = q;
+    notifyListeners();
   }
 
   @override

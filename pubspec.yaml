@@ -50,6 +50,7 @@ dependencies:
   # Icons
   material_design_icons_flutter: ^7.0.7296
   iconsax: ^0.0.8
+  path: ^1.9.1
 
 dev_dependencies:
   flutter_test:

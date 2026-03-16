@@ -17,6 +17,8 @@ import '../../services/supabase_service.dart';
 import '../../services/tts_service.dart';
 import '../../widgets/dual_subtitles_widget.dart';
 import '../../widgets/word_tap_overlay.dart';
+import '../../widgets/player/custom_video_controls.dart';
+import '../../widgets/player/player_settings_sheet.dart';
 
 class PlayerScreen extends StatefulWidget {
   final VideoItem video;
@@ -94,6 +96,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       debugPrint(
           '[Player] Getting stream URL for ${widget.video.youtubeId}...');
+
+      final qualities = await _streamService.getAvailableQualities(widget.video.youtubeId);
+      if (mounted) context.read<PlayerProvider>().setAvailableQualities(qualities);
+
       final url =
           await _streamService.getPlayableUrl(widget.video.youtubeId);
       debugPrint('[Player] Got stream URL, opening media...');
@@ -111,6 +117,41 @@ class _PlayerScreenState extends State<PlayerScreen> {
         });
       }
     }
+  }
+
+  Future<void> _changeQuality(String? newQuality) async {
+    if (!mounted) return;
+    if (newQuality == context.read<PlayerProvider>().selectedQuality) return;
+    
+    context.read<PlayerProvider>().setSelectedQuality(newQuality);
+    
+    final pos = _player.state.position;
+    final wasPlaying = _player.state.playing;
+    
+    try {
+      final url = await _streamService.getPlayableUrl(widget.video.youtubeId, quality: newQuality);
+      await _player.open(Media(url), play: false);
+      await _player.seek(pos);
+      if (wasPlaying) {
+        _player.play();
+      }
+    } catch (e) {
+      debugPrint('[Player] Error changing quality: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to change quality: $e')));
+      }
+    }
+  }
+
+  void _showNewSettingsBottomSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => PlayerSettingsSheet(
+        onQualityChanged: _changeQuality,
+      ),
+    );
   }
 
   void _openInYouTube() async {
@@ -403,7 +444,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
       controller: _videoController,
       controls: (state) => Stack(
         children: [
-          MaterialVideoControls(state),
+          CustomVideoControls(
+            player: _player,
+            title: widget.video.title,
+            isFullscreen: isFullscreen(context),
+            onToggleFullscreen: () {
+              if (isFullscreen(context)) {
+                state.exitFullscreen();
+              } else {
+                state.enterFullscreen();
+              }
+            },
+            onSettingsTap: () {
+              _showNewSettingsBottomSheet(context);
+            },
+            onBackTap: () {
+              if (isFullscreen(context)) {
+                state.exitFullscreen();
+              } else {
+                Navigator.of(context).pop();
+              }
+            },
+          ),
           _SubtitleOverlay(
             pp: pp,
             videoState: state,
@@ -423,7 +485,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
               }
             },
           ),
-          _FullscreenSettingsOverlay(pp: pp),
         ],
       ),
     );
@@ -881,112 +942,3 @@ class _Chip extends StatelessWidget {
   }
 }
 
-class _FullscreenSettingsOverlay extends StatefulWidget {
-  final PlayerProvider pp;
-  const _FullscreenSettingsOverlay({required this.pp});
-
-  @override
-  State<_FullscreenSettingsOverlay> createState() =>
-      _FullscreenSettingsOverlayState();
-}
-
-class _FullscreenSettingsOverlayState
-    extends State<_FullscreenSettingsOverlay> {
-  bool _visible = false;
-  Timer? _timer;
-
-  void _show() {
-    setState(() => _visible = true);
-    _timer?.cancel();
-    _timer = Timer(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _visible = false);
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isLandscape =
-        MediaQuery.of(context).orientation == Orientation.landscape;
-    if (!isLandscape) return const SizedBox.shrink();
-
-    return Positioned.fill(
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: _show,
-        child: Stack(
-          children: [
-            if (_visible)
-              Positioned(
-                top: 16,
-                right: 90, // Avoid overlapping standard controls
-                child: IconButton.filledTonal(
-                  onPressed: () {
-                    _show();
-                    _showSettingsBottomSheet(context);
-                  },
-                  icon: const Icon(Icons.settings_rounded),
-                  tooltip: 'Settings',
-                ).animate().fadeIn().scale(),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showSettingsBottomSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.subtitles_rounded),
-                const SizedBox(width: 12),
-                Text('Subtitle Position',
-                    style: Theme.of(context).textTheme.titleLarge),
-              ],
-            ),
-            const SizedBox(height: 24),
-            Text('Height from bottom',
-                style: Theme.of(context).textTheme.bodyMedium),
-            Consumer<PlayerProvider>(
-              builder: (context, pp, _) => Slider(
-                value: pp.subtitleBottomPadding,
-                min: 20,
-                max: 300,
-                onChanged: (v) => pp.setSubtitleBottomPadding(v),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text('Scale', style: Theme.of(context).textTheme.bodyMedium),
-            Consumer<PlayerProvider>(
-              builder: (context, pp, _) => Slider(
-                value: pp.subtitleScale,
-                min: 0.5,
-                max: 2.0,
-                onChanged: (v) => pp.setSubtitleScale(v),
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
-    );
-  }
-}
