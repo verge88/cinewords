@@ -9,12 +9,10 @@ import '../../models/user_progress.dart';
 import '../../widgets/video_card.dart';
 import '../../widgets/progress_ring.dart';
 import '../catalog/catalog_screen.dart';
-import '../catalog/movie_catalog_screen.dart';
 import '../catalog/favorites_screen.dart';
 import '../player/player_screen.dart';
 import '../vocabulary/vocabulary_screen.dart';
 import '../profile/profile_screen.dart';
-import '../../models/video_item.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -47,7 +45,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final screens = [
       _HomeTab(progress: _progress, onRefresh: _loadData),
       const CatalogScreen(),
-      const MovieCatalogScreen(),
       const VocabularyScreen(),
       const ProfileScreen(),
     ];
@@ -66,12 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
           NavigationDestination(
             icon: Icon(Icons.explore_outlined),
             selectedIcon: Icon(Icons.explore_rounded),
-            label: 'Videos',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.movie_outlined),
-            selectedIcon: Icon(Icons.movie_rounded),
-            label: 'Movies',
+            label: 'Catalog',
           ),
           NavigationDestination(
             icon: Icon(Icons.school_outlined),
@@ -408,7 +400,7 @@ class _HomeTab extends StatelessWidget {
     return FilledButton.icon(
       onPressed: () => _showAddVideoDialog(context),
       icon: const Icon(Icons.add_rounded),
-      label: const Text('Add Video'),
+      label: const Text('Add YouTube Video'),
       style: FilledButton.styleFrom(
         minimumSize: const Size(double.infinity, 56),
       ),
@@ -434,14 +426,14 @@ class _HomeTab extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'Add Video',
+              'Add YouTube Video',
               style: Theme.of(ctx).textTheme.titleLarge,
             ),
             const SizedBox(height: 16),
             TextField(
               controller: controller,
               decoration: InputDecoration(
-                hintText: 'Paste YouTube URL or direct link (.mp4)',
+                hintText: 'Paste YouTube URL or video ID',
                 prefixIcon: Icon(Icons.link, color: cs.primary),
               ),
               autofocus: true,
@@ -449,35 +441,15 @@ class _HomeTab extends StatelessWidget {
             const SizedBox(height: 16),
             FilledButton(
               onPressed: () async {
-                final text = controller.text.trim();
-                if (text.isEmpty) return;
+                if (controller.text.trim().isEmpty) return;
                 Navigator.pop(ctx);
-                
-                final isVidApi = text.toLowerCase().contains('vidapi.xyz') || 
-                                 text.toLowerCase().startsWith('tt');
-                final isDirect = text.toLowerCase().endsWith('.mp4') || 
-                                 text.toLowerCase().endsWith('.m3u8') ||
-                                 (text.startsWith('http') && !text.contains('youtu') && !isVidApi);
-                
-                VideoItem? video;
-                if (isVidApi) {
-                  video = await context
-                      .read<VideoProvider>()
-                      .importVidApiVideo(text);
-                } else if (isDirect) {
-                  video = await context
-                      .read<VideoProvider>()
-                      .importCustomVideo(text);
-                } else {
-                  video = await context
-                      .read<VideoProvider>()
-                      .importYouTubeVideo(text);
-                }
-                
+                final video = await context
+                    .read<VideoProvider>()
+                    .importYouTubeVideo(controller.text.trim());
                 if (video != null && context.mounted) {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => PlayerScreen(video: video!)),
+                    MaterialPageRoute(builder: (_) => PlayerScreen(video: video)),
                   );
                 }
               },

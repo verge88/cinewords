@@ -44,8 +44,10 @@ ON CONFLICT (id) DO NOTHING;
 -- Videos table
 CREATE TABLE videos (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  youtube_id TEXT UNIQUE NOT NULL,
+  youtube_id TEXT UNIQUE,
   title TEXT NOT NULL,
+  source_type TEXT DEFAULT 'youtube',
+  video_url TEXT,
   description TEXT,
   thumbnail_url TEXT,
   duration_sec INTEGER,

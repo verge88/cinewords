@@ -14,15 +14,11 @@ class VideoItem extends Equatable {
   final int totalUniqueWords;
   final int viewCount;
   final bool isFeatured;
-  final String sourceType;
-  final String? videoUrl;
 
   const VideoItem({
     required this.id,
     required this.youtubeId,
     required this.title,
-    this.sourceType = 'youtube',
-    this.videoUrl,
     this.description,
     this.thumbnailUrl,
     this.channelName,
@@ -40,8 +36,6 @@ class VideoItem extends Equatable {
       id: json['id'] ?? '',
       youtubeId: json['youtube_id'] ?? '',
       title: json['title'] ?? '',
-      sourceType: json['source_type'] ?? 'youtube',
-      videoUrl: json['video_url'],
       description: json['description'],
       thumbnailUrl: json['thumbnail_url'],
       channelName: json['channel_name'] ?? json['author'], // Fallback if still named old way in some rows
@@ -58,8 +52,6 @@ class VideoItem extends Equatable {
   Map<String, dynamic> toJson() => {
         'youtube_id': youtubeId,
         'title': title,
-        'source_type': sourceType,
-        'video_url': videoUrl,
         'description': description,
         'thumbnail_url': thumbnailUrl,
         'channel_name': channelName,

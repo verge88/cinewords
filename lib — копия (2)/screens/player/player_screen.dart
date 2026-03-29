@@ -19,7 +19,6 @@ import '../../widgets/dual_subtitles_widget.dart';
 import '../../widgets/word_tap_overlay.dart';
 import '../../widgets/player/custom_video_controls.dart';
 import '../../widgets/player/player_settings_sheet.dart';
-import '../../widgets/vidapi_player_widget.dart';
 
 class PlayerScreen extends StatefulWidget {
   final VideoItem video;
@@ -93,25 +92,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
       context.read<PlayerProvider>().loadVideo(widget.video);
     }
 
+    // Получаем URL потока через youtube_explode_dart
     try {
-      String url;
-      if (widget.video.sourceType == 'vidapi') {
-        debugPrint('[Player] Using VidAPI embed...');
-        if (mounted) setState(() => _loading = false);
-        return;
-      } else if (widget.video.sourceType == 'direct' && widget.video.videoUrl != null) {
-        debugPrint('[Player] Using direct stream URL...');
-        url = widget.video.videoUrl!;
-        if (mounted) context.read<PlayerProvider>().setAvailableQualities(['Auto']);
-      } else {
-        debugPrint('[Player] Getting stream URL for ${widget.video.youtubeId}...');
+      debugPrint(
+          '[Player] Getting stream URL for ${widget.video.youtubeId}...');
 
-        final qualities = await _streamService.getAvailableQualities(widget.video.youtubeId);
-        if (mounted) context.read<PlayerProvider>().setAvailableQualities(qualities);
+      final qualities = await _streamService.getAvailableQualities(widget.video.youtubeId);
+      if (mounted) context.read<PlayerProvider>().setAvailableQualities(qualities);
 
-        url = await _streamService.getPlayableUrl(widget.video.youtubeId);
-      }
-      
+      final url =
+          await _streamService.getPlayableUrl(widget.video.youtubeId);
       debugPrint('[Player] Got stream URL, opening media...');
 
       await _player.open(Media(url), play: true);
@@ -139,14 +129,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final wasPlaying = _player.state.playing;
     
     try {
-      String url;
-      if (widget.video.sourceType == 'vidapi') {
-        return; 
-      } else if (widget.video.sourceType == 'direct' && widget.video.videoUrl != null) {
-        url = widget.video.videoUrl!;
-      } else {
-        url = await _streamService.getPlayableUrl(widget.video.youtubeId, quality: newQuality);
-      }
+      final url = await _streamService.getPlayableUrl(widget.video.youtubeId, quality: newQuality);
       await _player.open(Media(url), play: false);
       await _player.seek(pos);
       if (wasPlaying) {
@@ -376,16 +359,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
 
           // ── Floating Controls ──
-          if (widget.video.sourceType != 'vidapi')
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 24,
-              child: _FloatingControls(player: _player, isPlaying: pp.isPlaying)
-                  .animate()
-                  .scale(delay: 400.ms, curve: Curves.easeOutBack)
-                  .fadeIn(),
-            ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 24,
+            child: _FloatingControls(player: _player, isPlaying: pp.isPlaying)
+                .animate()
+                .scale(delay: 400.ms, curve: Curves.easeOutBack)
+                .fadeIn(),
+          ),
         ],
       ),
     );
@@ -455,10 +437,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ),
       );
-    }
-
-    if (widget.video.sourceType == 'vidapi' && widget.video.videoUrl != null) {
-      return VidApiPlayerWidget(embedUrl: widget.video.videoUrl!);
     }
 
     // media_kit Video виджет
