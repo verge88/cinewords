@@ -22,11 +22,24 @@ import '../vocabulary/vocabulary_screen.dart';
 
 /// Единая метрика отступов экрана.
 const double _gutter = 20;
-const double _railHeight = 262;
+
+/// Ширина карточки в горизонтальных полках.
 const double _railItemWidth = 272;
 
-/// Фирменные акценты. Не зависят от dynamic color, поэтому одинаковы
-/// на всех устройствах и в обеих темах.
+/// Минимальная высота плитки быстрого доступа. Реальная высота считается
+/// от содержимого, поэтому при системном увеличении шрифта плитка растёт,
+/// а не обрезает подпись.
+const double _quickTileMinHeight = 112;
+
+/// Высота полки зависит от масштаба текста: превью 16:9 плюс отступы карточки
+/// плюс место под заголовок в две строки.
+double _railHeight(BuildContext context) {
+  const thumbnail = _railItemWidth * 9 / 16;
+  return thumbnail + 32 + MediaQuery.textScalerOf(context).scale(76);
+}
+
+/// Фирменные акценты. Не зависят от dynamic color, поэтому выглядят
+/// одинаково на всех устройствах и в обеих темах.
 abstract final class _Accent {
   static const violet = Color(0xFF7C6CFF);
   static const teal = Color(0xFF00BFA5);
@@ -36,8 +49,8 @@ abstract final class _Accent {
 
 enum HomeTab { home, videos, movies, words, profile }
 
-/// Доступ к навигации по табам из любого места главного экрана —
-/// чтобы не пушить второй экземпляр экрана, который уже есть в таббаре.
+/// Навигация по табам из любого места главного экрана — чтобы не пушить
+/// второй экземпляр экрана, который уже есть в таббаре.
 class HomeScope extends InheritedWidget {
   const HomeScope({
     super.key,
@@ -49,8 +62,13 @@ class HomeScope extends InheritedWidget {
   final ValueChanged<HomeTab> openTab;
   final Future<void> Function() reload;
 
+  /// Возвращает null, если скоуп недоступен — например, внутри роута
+  /// (bottom sheet, dialog), который живёт выше HomeScope в дереве.
+  static HomeScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<HomeScope>();
+
   static HomeScope of(BuildContext context) {
-    final scope = context.dependOnInheritedWidgetOfExactType<HomeScope>();
+    final scope = maybeOf(context);
     assert(scope != null, 'HomeScope не найден выше в дереве');
     return scope!;
   }
@@ -67,8 +85,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  /// Прогресс живёт в notifier, а не в state: так его обновление
-  /// перестраивает только шапку, а не весь таб со списками.
+  /// Прогресс живёт в notifier, а не в state: его обновление перестраивает
+  /// только шапку и карточку плана, а не весь таб со списками.
   final ValueNotifier<UserProgress?> _progress = ValueNotifier(null);
 
   HomeTab _tab = HomeTab.home;
@@ -85,9 +103,9 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  /// Грузим только то, что нужно главной: подборки для полок,
-  /// словарь для плана дня и прогресс для шапки.
-  /// Остальные табы поднимают свои данные сами при первом открытии.
+  /// Грузим только то, что нужно главной: подборки для полок, словарь для
+  /// плана дня и прогресс для шапки. Остальные табы поднимают свои данные
+  /// сами при первом открытии.
   Future<void> _loadHomeData() async {
     if (!mounted) return;
     final videos = context.read<VideoProvider>();
@@ -180,9 +198,19 @@ class _LazyIndexedStackState extends State<_LazyIndexedStack> {
       List<bool>.filled(widget.builders.length, false);
 
   @override
-  Widget build(BuildContext context) {
+  void initState() {
+    super.initState();
     _activated[widget.index] = true;
+  }
 
+  @override
+  void didUpdateWidget(_LazyIndexedStack oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _activated[widget.index] = true;
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return IndexedStack(
       index: widget.index,
       children: [
@@ -248,8 +276,8 @@ class _HomeFeed extends StatelessWidget {
   }
 }
 
-/// Одна выдержанная анимация появления на секцию — без покадрового
-/// стаггера на каждом элементе списков.
+/// Одна выдержанная анимация появления на секцию — без покадрового стаггера
+/// на каждом элементе списков.
 extension _Entrance on Widget {
   Widget entrance(int order) => animate(
         delay: Duration(milliseconds: 40 * order),
@@ -291,16 +319,21 @@ class _HeroCard extends StatelessWidget {
     return 'Добрый вечер';
   }
 
+  String get _goalHint {
+    if (progress.dailyProgressPercent >= 1) {
+      return 'Отличный результат, так держать';
+    }
+    if (progress.todayMinutes == 0) return 'Начните с короткого видео';
+    final left = progress.dailyGoalMinutes - progress.todayMinutes;
+    return 'Осталось $left ${_plural(left, 'минута', 'минуты', 'минут')}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final palette = _HomePalette.of(context);
     final userName = context.select<AuthProvider, String>((a) => a.displayName);
     final scope = HomeScope.of(context);
-
-    final goalReached = progress.dailyProgressPercent >= 1;
-    final left =
-        (progress.dailyGoalMinutes - progress.todayMinutes).clamp(0, 9999);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(_gutter, 8, _gutter, 20),
@@ -400,7 +433,7 @@ class _HeroCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        goalReached
+                        progress.dailyProgressPercent >= 1
                             ? 'Цель дня выполнена'
                             : 'Цель дня · ${progress.dailyGoalMinutes} мин',
                         style: theme.textTheme.titleMedium?.copyWith(
@@ -410,7 +443,7 @@ class _HeroCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        _goalHint(goalReached, left),
+                        _goalHint,
                         style: theme.textTheme.bodySmall
                             ?.copyWith(color: palette.heroForegroundMuted),
                       ),
@@ -420,53 +453,50 @@ class _HeroCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 20),
-            Container(height: 1, color: palette.heroBorder),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: _HeroStat(
-                    icon: Icons.local_fire_department_rounded,
-                    iconColor: _Accent.coral,
-                    value: '${progress.streakDays}',
-                    label: _plural(
-                      progress.streakDays,
-                      'день подряд',
-                      'дня подряд',
-                      'дней подряд',
+            Divider(height: 1, thickness: 1, color: palette.heroBorder),
+            const SizedBox(height: 16),
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: _HeroStat(
+                      icon: Icons.local_fire_department_rounded,
+                      iconColor: _Accent.coral,
+                      value: '${progress.streakDays}',
+                      label: _plural(
+                        progress.streakDays,
+                        'день подряд',
+                        'дня подряд',
+                        'дней подряд',
+                      ),
+                      palette: palette,
+                      muted: progress.streakDays == 0,
                     ),
-                    palette: palette,
-                    muted: progress.streakDays == 0,
                   ),
-                ),
-                Container(width: 1, height: 32, color: palette.heroBorder),
-                Expanded(
-                  child: _HeroStat(
-                    icon: Icons.check_circle_outline_rounded,
-                    iconColor: _Accent.teal,
-                    value: isLoading ? '—' : '${progress.totalWordsLearned}',
-                    label: _plural(
-                      progress.totalWordsLearned,
-                      'слово изучено',
-                      'слова изучено',
-                      'слов изучено',
+                  VerticalDivider(width: 1, thickness: 1, color: palette.heroBorder),
+                  Expanded(
+                    child: _HeroStat(
+                      icon: Icons.check_circle_outline_rounded,
+                      iconColor: _Accent.teal,
+                      value: isLoading ? '—' : '${progress.totalWordsLearned}',
+                      label: _plural(
+                        progress.totalWordsLearned,
+                        'слово изучено',
+                        'слова изучено',
+                        'слов изучено',
+                      ),
+                      palette: palette,
+                      muted: progress.totalWordsLearned == 0,
                     ),
-                    palette: palette,
-                    muted: progress.totalWordsLearned == 0,
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
       ),
     );
-  }
-
-  String _goalHint(bool goalReached, int left) {
-    if (goalReached) return 'Отличный результат, так держать';
-    if (progress.todayMinutes == 0) return 'Начните с короткого видео';
-    return 'Осталось $left ${_plural(left, 'минута', 'минуты', 'минут')}';
   }
 }
 
@@ -502,6 +532,7 @@ class _HeroStat extends StatelessWidget {
         const SizedBox(width: 8),
         Flexible(
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -613,6 +644,9 @@ class _HeroAction extends StatelessWidget {
 
 // ── Быстрый доступ ──────────────────────────────────────────────────────
 
+/// Сетка 2×2 без фиксированной пропорции: высота ряда равна высоте более
+/// «высокой» плитки, поэтому подписи не обрезаются ни при системном
+/// увеличении шрифта, ни на узких экранах.
 class _QuickAccessGrid extends StatelessWidget {
   const _QuickAccessGrid();
 
@@ -625,48 +659,74 @@ class _QuickAccessGrid extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(_gutter, 0, _gutter, 20),
-      child: GridView.count(
-        crossAxisCount: 2,
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        padding: EdgeInsets.zero,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 1.5,
+      child: Column(
         children: [
-          _QuickAccessTile(
-            icon: Icons.fitness_center_rounded,
-            title: 'Упражнения',
-            subtitle: 'Тренажёры',
-            color: _Accent.violet,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const ExercisesHubScreen()),
-            ),
+          _QuickAccessRow(
+            children: [
+              _QuickAccessTile(
+                icon: Icons.fitness_center_rounded,
+                title: 'Упражнения',
+                subtitle: 'Тренажёры',
+                color: _Accent.violet,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const ExercisesHubScreen(),
+                  ),
+                ),
+              ),
+              _QuickAccessTile(
+                icon: Icons.menu_book_rounded,
+                title: 'Словарь',
+                subtitle: 'Поиск и перевод',
+                color: _Accent.teal,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const FullDictionaryScreen(),
+                  ),
+                ),
+              ),
+            ],
           ),
-          _QuickAccessTile(
-            icon: Icons.menu_book_rounded,
-            title: 'Словарь',
-            subtitle: 'Поиск и перевод',
-            color: _Accent.teal,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const FullDictionaryScreen()),
-            ),
+          const SizedBox(height: 12),
+          _QuickAccessRow(
+            children: [
+              _QuickAccessTile(
+                icon: Icons.school_rounded,
+                title: 'Мои слова',
+                subtitle:
+                    inProgress > 0 ? '$inProgress в изучении' : 'Повторение',
+                color: _Accent.amber,
+                onTap: () => scope.openTab(HomeTab.words),
+              ),
+              _QuickAccessTile(
+                icon: Icons.movie_outlined,
+                title: 'Фильмы',
+                subtitle: 'Каталог',
+                color: _Accent.coral,
+                onTap: () => scope.openTab(HomeTab.movies),
+              ),
+            ],
           ),
-          _QuickAccessTile(
-            icon: Icons.school_rounded,
-            title: 'Мои слова',
-            subtitle:
-                inProgress > 0 ? '$inProgress в изучении' : 'Повторение',
-            color: _Accent.amber,
-            onTap: () => scope.openTab(HomeTab.words),
-          ),
-          _QuickAccessTile(
-            icon: Icons.movie_outlined,
-            title: 'Фильмы',
-            subtitle: 'Каталог',
-            color: _Accent.coral,
-            onTap: () => scope.openTab(HomeTab.movies),
-          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuickAccessRow extends StatelessWidget {
+  const _QuickAccessRow({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(child: children[0]),
+          const SizedBox(width: 12),
+          Expanded(child: children[1]),
         ],
       ),
     );
@@ -700,12 +760,14 @@ class _QuickAccessTile extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
+          constraints: const BoxConstraints(minHeight: _quickTileMinHeight),
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: palette.cardBorder),
           ),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
@@ -727,7 +789,7 @@ class _QuickAccessTile extends StatelessWidget {
                   ),
                 ],
               ),
-              const Spacer(),
+              const SizedBox(height: 14),
               Text(
                 title,
                 maxLines: 1,
@@ -735,6 +797,7 @@ class _QuickAccessTile extends StatelessWidget {
                 style: theme.textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.w700,
                   color: palette.onSurface,
+                  height: 1.2,
                 ),
               ),
               const SizedBox(height: 2),
@@ -742,8 +805,10 @@ class _QuickAccessTile extends StatelessWidget {
                 subtitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: palette.onSurfaceMuted),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: palette.onSurfaceMuted,
+                  height: 1.2,
+                ),
               ),
             ],
           ),
@@ -781,6 +846,9 @@ class _DailyPlanSection extends StatelessWidget {
   }
 }
 
+/// Карточка плана использует фирменный градиент, а не cs.primary: на части
+/// устройств dynamic color отдаёт почти белый primary, и карточка выпадала
+/// из тёмного оформления экрана.
 class _DailyPlanCard extends StatelessWidget {
   const _DailyPlanCard({required this.wordsToReview});
 
@@ -789,110 +857,113 @@ class _DailyPlanCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final cs = theme.colorScheme;
 
-    return Material(
-      borderRadius: BorderRadius.circular(24),
-      clipBehavior: Clip.antiAlias,
-      color: cs.primary,
-      child: InkWell(
-        onTap: () {
-          context.read<VocabularyProvider>().preparePractice();
-          HomeScope.of(context).openTab(HomeTab.words);
-        },
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(20, 18, 16, 18),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.centerLeft,
-              end: Alignment.centerRight,
-              colors: [cs.primary, Color.alphaBlend(
-                cs.tertiary.withValues(alpha: 0.35),
-                cs.primary,
-              )],
+    return Material
+        .new(
+          borderRadius: BorderRadius.circular(24),
+          clipBehavior: Clip.antiAlias,
+          color: _Accent.violet,
+          child: InkWell(
+            onTap: () {
+              context.read<VocabularyProvider>().preparePractice();
+              HomeScope.of(context).openTab(HomeTab.words);
+            },
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(20, 18, 16, 18),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [Color(0xFF6C5CE7), Color(0xFF8E7BFF)],
+                ),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'ПЛАН НА СЕГОДНЯ',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.75),
+                            letterSpacing: 1.4,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '$wordsToReview '
+                          '${_plural(wordsToReview, 'слово', 'слова', 'слов')} '
+                          'к повторению',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            height: 1.2,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Займёт около 5 минут',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.8),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: 30,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'ПЛАН НА СЕГОДНЯ',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: cs.onPrimary.withValues(alpha: 0.8),
-                        letterSpacing: 1.4,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '$wordsToReview '
-                      '${_plural(wordsToReview, 'слово', 'слова', 'слов')} '
-                      'к повторению',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: cs.onPrimary,
-                        fontWeight: FontWeight.w700,
-                        height: 1.15,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Займёт около 5 минут',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: cs.onPrimary.withValues(alpha: 0.85),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: cs.onPrimary.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: Icon(
-                  Icons.play_arrow_rounded,
-                  color: cs.onPrimary,
-                  size: 30,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+        );
   }
 }
 
 // ── Полки с видео ───────────────────────────────────────────────────────
 
+/// «Продолжить» подписано через Consumer, а не select: VideoProvider
+/// мутирует список избранного на месте (insert/removeWhere), ссылка на
+/// List не меняется, и select не увидел бы обновления.
 class _ContinueSection extends StatelessWidget {
   const _ContinueSection();
 
   @override
   Widget build(BuildContext context) {
-    final favorites =
-        context.select<VideoProvider, List<VideoItem>>((v) => v.favoriteVideos);
-    if (favorites.isEmpty) return const SizedBox.shrink();
+    return Consumer<VideoProvider>(
+      builder: (context, videos, _) {
+        final favorites = videos.favoriteVideos;
+        if (favorites.isEmpty) return const SizedBox.shrink();
 
-    return Column(
-      children: [
-        _SectionHeader(
-          title: 'Продолжить',
-          icon: Icons.play_circle_outline_rounded,
-          actionLabel: 'Все',
-          onAction: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const FavoritesScreen()),
-          ),
-        ),
-        _VideoRail(videos: favorites),
-        const SizedBox(height: 28),
-      ],
+        return Column(
+          children: [
+            _SectionHeader(
+              title: 'Продолжить',
+              icon: Icons.play_circle_outline_rounded,
+              actionLabel: 'Все',
+              onAction: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+              ),
+            ),
+            _VideoRail(videos: favorites),
+            const SizedBox(height: 28),
+          ],
+        );
+      },
     );
   }
 }
@@ -913,7 +984,8 @@ class _FeaturedSection extends StatelessWidget {
           title: 'Рекомендуем',
           icon: Icons.auto_awesome_rounded,
           actionLabel: featured.isEmpty ? null : 'Все',
-          onAction: featured.isEmpty ? null : () => scope.openTab(HomeTab.videos),
+          onAction:
+              featured.isEmpty ? null : () => scope.openTab(HomeTab.videos),
         ),
         if (featured.isEmpty && isLoading)
           const _RailSkeleton()
@@ -943,8 +1015,8 @@ class _TrendingSection extends StatelessWidget {
     final scope = HomeScope.of(context);
 
     if (trending.isEmpty && isLoading) {
-      return Column(
-        children: const [
+      return const Column(
+        children: [
           _SectionHeader(title: 'В тренде', icon: Icons.trending_up_rounded),
           _ListSkeleton(),
           SizedBox(height: 20),
@@ -992,7 +1064,7 @@ class _VideoRail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: _railHeight,
+      height: _railHeight(context),
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         clipBehavior: Clip.none,
@@ -1116,6 +1188,7 @@ class _EmptyLibraryCard extends StatelessWidget {
           const SizedBox(height: 14),
           Text(
             'Здесь появятся подборки',
+            textAlign: TextAlign.center,
             style: theme.textTheme.titleSmall
                 ?.copyWith(fontWeight: FontWeight.w700),
           ),
@@ -1144,17 +1217,19 @@ class _RailSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final height = _railHeight(context);
+
     return SizedBox(
-      height: _railHeight,
+      height: height,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: _gutter),
         physics: const NeverScrollableScrollPhysics(),
         itemCount: 3,
         separatorBuilder: (_, __) => const SizedBox(width: 12),
-        itemBuilder: (_, __) => const _SkeletonBox(
+        itemBuilder: (_, __) => _SkeletonBox(
           width: _railItemWidth,
-          height: _railHeight,
+          height: height,
         ),
       ),
     );
@@ -1213,7 +1288,6 @@ class _AddVideoBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final cs = theme.colorScheme;
     final palette = _HomePalette.of(context);
 
     return InkWell(
@@ -1221,7 +1295,7 @@ class _AddVideoBanner extends StatelessWidget {
       onTap: onTap,
       child: CustomPaint(
         painter: _DashedBorderPainter(
-          color: cs.primary.withValues(alpha: 0.45),
+          color: palette.accent.withValues(alpha: 0.45),
           radius: 22,
         ),
         child: Padding(
@@ -1232,10 +1306,14 @@ class _AddVideoBanner extends StatelessWidget {
                 width: 44,
                 height: 44,
                 decoration: BoxDecoration(
-                  color: cs.primary.withValues(alpha: 0.12),
+                  color: palette.accent.withValues(alpha: 0.14),
                   borderRadius: BorderRadius.circular(14),
                 ),
-                child: Icon(Icons.add_rounded, color: cs.primary, size: 24),
+                child: Icon(
+                  Icons.add_rounded,
+                  color: palette.accent,
+                  size: 24,
+                ),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -1308,9 +1386,13 @@ class _DashedBorderPainter extends CustomPainter {
 
 enum _VideoSource { youtube, direct, vidApi }
 
+/// IMDb-идентификатор — строго `tt` плюс цифры, иначе любая ссылка,
+/// начинающаяся на «tt», уходила бы в ветку VidAPI.
+final RegExp _imdbId = RegExp(r'^tt\d{6,}$');
+
 _VideoSource _detectSource(String raw) {
   final value = raw.trim().toLowerCase();
-  if (value.contains('vidapi.xyz') || value.startsWith('tt')) {
+  if (value.contains('vidapi.xyz') || _imdbId.hasMatch(value)) {
     return _VideoSource.vidApi;
   }
   if (value.contains('youtube.com') || value.contains('youtu.be')) {
@@ -1324,12 +1406,13 @@ _VideoSource _detectSource(String raw) {
   return _VideoSource.youtube;
 }
 
+/// Лист живёт в отдельном роуте, выше HomeScope, поэтому переключение табов
+/// после импорта делается через уже полученный контекст ленты, а не изнутри.
 Future<void> _showAddVideoSheet(BuildContext context) async {
   final video = await showModalBottomSheet<VideoItem>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
-    showDragHandle: true,
     builder: (_) => const _AddVideoSheet(),
   );
 
@@ -1453,8 +1536,8 @@ class _AddVideoSheetState extends State<_AddVideoSheet> {
 
 // ── Палитра и утилиты ───────────────────────────────────────────────────
 
-/// Все решения «светлая / тёмная тема» собраны в одном месте,
-/// чтобы виджеты не разъезжались по стилю.
+/// Все решения «светлая / тёмная тема» собраны в одном месте, чтобы виджеты
+/// не разъезжались по стилю.
 @immutable
 class _HomePalette {
   const _HomePalette({
@@ -1516,7 +1599,7 @@ class _HomePalette {
     }
 
     return _HomePalette(
-      accent: cs.primary,
+      accent: _Accent.violet,
       heroSurface: cs.primaryContainer,
       heroSurfaceAlt: Color.alphaBlend(
         cs.tertiaryContainer.withValues(alpha: 0.55),
@@ -1526,7 +1609,7 @@ class _HomePalette {
       heroLayer: cs.surface.withValues(alpha: 0.55),
       heroForeground: cs.onPrimaryContainer,
       heroForegroundMuted: cs.onPrimaryContainer.withValues(alpha: 0.70),
-      ringTrack: cs.primary.withValues(alpha: 0.16),
+      ringTrack: cs.onPrimaryContainer.withValues(alpha: 0.14),
       cardSurface: cs.surfaceContainerLow,
       cardBorder: cs.outlineVariant.withValues(alpha: 0.40),
       onSurface: cs.onSurface,
