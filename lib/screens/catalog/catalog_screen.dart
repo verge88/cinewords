@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
@@ -20,6 +21,48 @@ class _CatalogScreenState extends State<CatalogScreen> {
   String _selectedCategory = 'all';
   String _selectedDifficulty = 'all';
   String _lastQuery = '';
+
+  // Debounce-таймер для поискового ввода — не дёргаем YouTube API
+  // на каждое нажатие клавиши.
+  Timer? _searchDebounce;
+  static const _searchDebounceDuration = Duration(milliseconds: 400);
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      // Если пользователь стёр запрос — мгновенно сбрасываем, без задержки.
+      if (_lastQuery.isNotEmpty) {
+        setState(() => _lastQuery = '');
+      }
+      return;
+    }
+    _searchDebounce = Timer(_searchDebounceDuration, () {
+      if (!mounted) return;
+      if (trimmed == _lastQuery) return; // не повторяем одинаковые запросы
+      _lastQuery = trimmed;
+      context.read<VideoProvider>().search(trimmed);
+      setState(() {});
+    });
+  }
+
+  void _onSearchSubmitted(String value) {
+    // Submit немедленно отменяет debounce и запускает поиск.
+    _searchDebounce?.cancel();
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return;
+    if (trimmed == _lastQuery) return;
+    _lastQuery = trimmed;
+    context.read<VideoProvider>().search(trimmed);
+    setState(() {});
+  }
 
   static const _categories = [
     ('all', 'All', Icons.apps_rounded),
@@ -67,18 +110,15 @@ class _CatalogScreenState extends State<CatalogScreen> {
                     IconButton(
                       icon: const Icon(Icons.clear),
                       onPressed: () {
+                        _searchDebounce?.cancel();
                         _searchController.clear();
                         _lastQuery = '';
                         setState(() {});
                       },
                     ),
                 ],
-                onSubmitted: (q) {
-                  if (q.trim().isNotEmpty) {
-                    _lastQuery = q.trim();
-                    videoProvider.search(q.trim());
-                  }
-                },
+                onChanged: _onSearchChanged,
+                onSubmitted: _onSearchSubmitted,
                 shape: WidgetStatePropertyAll(
                   RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(20)),
@@ -282,11 +322,5 @@ class _CatalogScreenState extends State<CatalogScreen> {
         },
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
   }
 }

@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze *)",
+      "Bash(xargs grep *)",
+      "Bash(gh repo *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -sL https://raw.githubusercontent.com/kodify-js/MovieDex/main/lib/api/contentproviders/movie-tv_providers/vidzee.dart)",
+      "Bash(curl -sL -m 10 -o /tmp/vidzee.json -w \"HTTP=%{http_code} TIME=%{time_total}\\\\n\" -A \"Mozilla/5.0\" -H \"Origin: https://player.vidzee.wtf\" \"https://player.vidzee.wtf/api/server?id=27205&sr=1\")",
+      "Read(//tmp/**)",
+      "Bash(curl -sL -m 10 -o /tmp/vsrcsu.html -w \"HTTP=%{http_code} TIME=%{time_total} BYTES=%{size_download}\\\\n\" -A \"Mozilla/5.0 \\(Linux; Android 13\\)\" -H \"Referer: https://vidsrc.su/\" \"https://vidsrc.su/embed/movie/27205\")",
+      "Bash(curl -sL -m 10 -o /tmp/autoe.txt -w \"HTTP=%{http_code}\\\\n\" -A \"Mozilla/5.0\" \"https://flix.1anime.app/movie/autoembed/27205\")",
+      "Bash(curl -sL -m 10 -o /tmp/v0.json -w \"HTTP=%{http_code}\\\\n\" -A \"Mozilla/5.0\" -H \"Origin: https://player.vidzee.wtf\" \"https://player.vidzee.wtf/api/server?id=27205&sr=0\")",
+      "Bash(curl -sL -m 10 -o /tmp/v3.json -w \"HTTP=%{http_code}\\\\n\" -A \"Mozilla/5.0\" -H \"Origin: https://player.vidzee.wtf\" \"https://player.vidzee.wtf/api/server?id=27205&sr=3\")",
+      "Bash(curl -sL -m 8 -A \"Mozilla/5.0\" \"http://scrapper.rivestream.org/api/providers\" -o /tmp/rive.json -w \"HTTP=%{http_code}\\\\n\")",
+      "Read(//c/Users/niyaz/Documents/cinewords/**)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/kodify-js/MovieDex/main/lib/api/contentproviders/rive_providers/rive.dart\")",
+      "Bash(curl -sIL -m 5 -A \"Mozilla/5.0\" \"https://scrapper.rivestream.org/api/providers\" -o /dev/null -w \"HTTPS=%{http_code}\\\\n\")",
+      "Bash(curl -sIL -m 5 -A \"Mozilla/5.0\" \"http://scrapper.rivestream.org/api/providers\" -o /dev/null -w \"HTTP=%{http_code}\\\\n\")",
+      "Bash(curl -sL -m 8 -A \"Mozilla/5.0\" \"https://scrapper.rivestream.org/api/provider?provider=asiacloud&id=27205\" -o /tmp/r1.json)",
+      "Bash(JAVA_HOME=\"C:/Program Files/Java/jdk-21\" ./gradlew --version)",
+      "Bash(curl -s \"https://meta.fabricmc.net/v2/versions/yarn/1.21.11\")",
+      "Bash(curl -s \"https://maven.fabricmc.net/net/fabricmc/fabric-loom/maven-metadata.xml\")",
+      "Bash(JAVA_HOME=\"C:/Program Files/Java/jdk-21\" ./gradlew build)",
+      "Bash(curl -s \"https://services.gradle.org/distributions/\")",
+      "Bash(curl -s \"https://gradle.org/releases/\")",
+      "Bash(python -m markitdown \"C:\\\\Users\\\\niyaz\\\\Documents\\\\статья3-4.docx\")",
+      "Read(//c/Users/niyaz/AppData/Local/Temp/**)",
+      "Bash(pip install *)",
+      "Bash(python -m markitdown \"C:\\\\Users\\\\niyaz\\\\Documents\\\\статья2-12.docx\")",
+      "Bash(python -m markitdown \"C:\\\\Users\\\\niyaz\\\\Downloads\\\\sip_article.docx\")",
+      "Bash(python -c ' *)",
+      "Bash(npm list *)",
+      "Bash(npm install *)",
+      "Bash(wait)"
+    ]
+  }
+}

@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../models/movie.dart';
@@ -25,10 +26,14 @@ class MovieDetailScreen extends StatelessWidget {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    if (movie.backdropPath.isNotEmpty)
-                      Image.network(
-                        movie.backdropUrl,
+                    if (movie.backdropUrl.isNotEmpty)
+                      CachedNetworkImage(
+                        imageUrl: movie.backdropUrl,
                         fit: BoxFit.cover,
+                        placeholder: (_, __) =>
+                            Container(color: Colors.grey[900]),
+                        errorWidget: (_, __, ___) =>
+                            Container(color: Colors.grey[900]),
                       )
                     else
                       Container(color: Colors.grey[900]),

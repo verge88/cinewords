@@ -1,5 +1,5 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import '../models/subtitle_line.dart';
 
 class DualSubtitlesWidget extends StatelessWidget {
@@ -138,8 +138,16 @@ class DualSubtitlesWidget extends StatelessWidget {
 
 }
 
-/// Renders subtitle text with individually tappable words
-class TappableSubtitleText extends StatelessWidget {
+/// Renders subtitle text with individually tappable words.
+///
+/// Реализован через единый `Text.rich` с `TextSpan`-ами и
+/// `TapGestureRecognizer`-ами вместо отдельных StatefulWidget на каждое слово.
+/// Это даёт:
+///   * 1 виджет на всю строку (вместо N виджетов на N слов);
+///   * подсветка нажатого слова через `ValueListenableBuilder` —
+///     перестраивается только сам RichText, а не родительское дерево;
+///   * recognizers корректно освобождаются в `dispose()`.
+class TappableSubtitleText extends StatefulWidget {
   final SubtitleLine line;
   final TextStyle style;
   final void Function(String word, SubtitleLine line) onWordTap;
@@ -154,84 +162,101 @@ class TappableSubtitleText extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    // Split into words while preserving spacing/punctuation for display
-    final rawText = line.text;
-    final wordRegex = RegExp(r"[\w']+|[^\w\s]+|\s+");
-    final tokens = wordRegex.allMatches(rawText).map((m) => m.group(0)!).toList();
+  State<TappableSubtitleText> createState() => _TappableSubtitleTextState();
+}
 
-    return Wrap(
-      children: tokens.map((token) {
-        final isWord = RegExp(r"^[\w']+$").hasMatch(token);
+class _TappableSubtitleTextState extends State<TappableSubtitleText> {
+  // Регулярки в static final — компилируются один раз.
+  static final RegExp _tokenRegex = RegExp(r"[\w']+|[^\w\s]+|\s+");
+  static final RegExp _wordRegex = RegExp(r"^[\w']+$");
 
-        if (!isWord) {
-          return Text(token, style: style);
-        }
+  // Индекс текущего "нажатого" слова (-1 если ничего не нажато).
+  final ValueNotifier<int> _pressedIndex = ValueNotifier<int>(-1);
 
-        return _HoverWord(
-          word: token,
-          style: style,
-          accentColor: accentColor,
-          onTap: () => onWordTap(token, line),
-        );
-      }).toList(),
-    );
+  // Кэш токенов и распознавателей жестов для текущей строки субтитров.
+  List<String> _tokens = const [];
+  List<bool> _isWordFlags = const [];
+  List<TapGestureRecognizer?> _recognizers = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _rebuildTokens();
   }
-}
-
-class _HoverWord extends StatefulWidget {
-  final String word;
-  final TextStyle style;
-  final Color accentColor;
-  final VoidCallback onTap;
-
-  const _HoverWord({
-    required this.word,
-    required this.style,
-    required this.accentColor,
-    required this.onTap,
-  });
 
   @override
-  State<_HoverWord> createState() => _HoverWordState();
-}
+  void didUpdateWidget(covariant TappableSubtitleText old) {
+    super.didUpdateWidget(old);
+    if (old.line.id != widget.line.id || old.line.text != widget.line.text) {
+      _disposeRecognizers();
+      _rebuildTokens();
+      _pressedIndex.value = -1;
+    }
+  }
 
-class _HoverWordState extends State<_HoverWord> {
-  bool _isPressed = false;
+  void _rebuildTokens() {
+    final raw = widget.line.text;
+    final tokens = _tokenRegex.allMatches(raw).map((m) => m.group(0)!).toList();
+    final flags = List<bool>.generate(
+      tokens.length,
+      (i) => _wordRegex.hasMatch(tokens[i]),
+    );
+    final recs = List<TapGestureRecognizer?>.generate(tokens.length, (i) {
+      if (!flags[i]) return null;
+      final rec = TapGestureRecognizer();
+      rec.onTapDown = (_) {
+        _pressedIndex.value = i;
+      };
+      rec.onTapUp = (_) {
+        _pressedIndex.value = -1;
+        widget.onWordTap(tokens[i], widget.line);
+      };
+      rec.onTapCancel = () {
+        _pressedIndex.value = -1;
+      };
+      return rec;
+    });
+    _tokens = tokens;
+    _isWordFlags = flags;
+    _recognizers = recs;
+  }
+
+  void _disposeRecognizers() {
+    for (final r in _recognizers) {
+      r?.dispose();
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposeRecognizers();
+    _pressedIndex.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _isPressed = true),
-      onTapUp: (_) {
-        setState(() => _isPressed = false);
-        widget.onTap();
+    return ValueListenableBuilder<int>(
+      valueListenable: _pressedIndex,
+      builder: (context, pressed, _) {
+        final pressedStyle = widget.style.copyWith(
+          color: widget.accentColor,
+          backgroundColor: widget.accentColor.withOpacity(0.15),
+        );
+        final spans = <TextSpan>[];
+        for (int i = 0; i < _tokens.length; i++) {
+          if (_isWordFlags[i]) {
+            spans.add(TextSpan(
+              text: _tokens[i],
+              style: i == pressed ? pressedStyle : widget.style,
+              recognizer: _recognizers[i],
+            ));
+          } else {
+            spans.add(TextSpan(text: _tokens[i], style: widget.style));
+          }
+        }
+        return Text.rich(TextSpan(children: spans));
       },
-      onTapCancel: () => setState(() => _isPressed = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
-        decoration: BoxDecoration(
-          color: _isPressed
-              ? widget.accentColor.withOpacity(0.15)
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(6),
-          border: _isPressed
-              ? Border(
-                  bottom: BorderSide(
-                    color: widget.accentColor,
-                    width: 2,
-                  ),
-                )
-              : null,
-        ),
-        child: Text(
-          widget.word,
-          style: widget.style.copyWith(
-            color: _isPressed ? widget.accentColor : null,
-          ),
-        ),
-      ),
     );
   }
 }

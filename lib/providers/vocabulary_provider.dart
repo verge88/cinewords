@@ -8,9 +8,18 @@ class VocabularyProvider extends ChangeNotifier {
   bool _isLoading = false;
   int _currentReviewIndex = 0;
 
+  // Кэш для производных значений — пересчитывается один раз при изменении
+  // _allWords (через _recomputeDerived), а не на каждый build/get.
+  int _newCount = 0;
+  int _learningCount = 0;
+  int _reviewCount = 0;
+  int _masteredCount = 0;
+  List<WordCard> _wordsOnly = const [];
+  List<WordCard> _phrasesOnly = const [];
+
   List<WordCard> get allWords => _allWords;
-  List<WordCard> get wordsOnly => _allWords.where((w) => w.type == 'word').toList();
-  List<WordCard> get phrasesOnly => _allWords.where((w) => w.type == 'phrase').toList();
+  List<WordCard> get wordsOnly => _wordsOnly;
+  List<WordCard> get phrasesOnly => _phrasesOnly;
   List<WordCard> get reviewQueue => _reviewQueue;
   bool get isLoading => _isLoading;
   int get currentReviewIndex => _currentReviewIndex;
@@ -19,10 +28,44 @@ class VocabularyProvider extends ChangeNotifier {
           ? _reviewQueue[_currentReviewIndex]
           : null;
 
-  int get newCount => _allWords.where((w) => w.status == 'new').length;
-  int get learningCount => _allWords.where((w) => w.status == 'learning').length;
-  int get reviewCount => _allWords.where((w) => w.status == 'review').length;
-  int get masteredCount => _allWords.where((w) => w.status == 'mastered').length;
+  int get newCount => _newCount;
+  int get learningCount => _learningCount;
+  int get reviewCount => _reviewCount;
+  int get masteredCount => _masteredCount;
+
+  /// Один проход по списку — кэшируем все агрегаты сразу.
+  void _recomputeDerived() {
+    int n = 0, l = 0, r = 0, m = 0;
+    final words = <WordCard>[];
+    final phrases = <WordCard>[];
+    for (final w in _allWords) {
+      switch (w.status) {
+        case 'new':
+          n++;
+          break;
+        case 'learning':
+          l++;
+          break;
+        case 'review':
+          r++;
+          break;
+        case 'mastered':
+          m++;
+          break;
+      }
+      if (w.type == 'word') {
+        words.add(w);
+      } else if (w.type == 'phrase') {
+        phrases.add(w);
+      }
+    }
+    _newCount = n;
+    _learningCount = l;
+    _reviewCount = r;
+    _masteredCount = m;
+    _wordsOnly = words;
+    _phrasesOnly = phrases;
+  }
 
   String _currentExerciseType = 'flashcard'; // flashcard, multiple_choice, typing, word_builder
   String get currentExerciseType => _currentExerciseType;
@@ -57,6 +100,7 @@ class VocabularyProvider extends ChangeNotifier {
       _allWords = await SupabaseService.getUserVocabulary();
       _reviewQueue = await SupabaseService.getWordsToReview();
       _currentReviewIndex = 0;
+      _recomputeDerived();
     } catch (e) {
       debugPrint('Error loading vocabulary: $e');
     }
@@ -124,6 +168,7 @@ class VocabularyProvider extends ChangeNotifier {
     try {
       await SupabaseService.deleteWord(id);
       _allWords.removeWhere((w) => w.id == id);
+      _recomputeDerived();
       notifyListeners();
     } catch (e) {
       debugPrint('Error deleting word: $e');

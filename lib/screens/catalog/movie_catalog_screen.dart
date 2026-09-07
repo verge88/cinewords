@@ -1,10 +1,14 @@
+import 'dart:async';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:shimmer/shimmer.dart';
 import '../../models/movie.dart';
-import '../../services/tmdb_service.dart';
+import '../../services/kinopoisk_service.dart';
+import '../../services/archive_org_service.dart';
 import 'movie_detail_screen.dart';
+
+enum CatalogSource { kinopoisk, archive }
 
 class MovieCatalogScreen extends StatefulWidget {
   const MovieCatalogScreen({super.key});
@@ -14,11 +18,44 @@ class MovieCatalogScreen extends StatefulWidget {
 }
 
 class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
-  final TMDBService _tmdbService = TMDBService();
+  final KinopoiskService _kinopoisk = KinopoiskService();
+  final ArchiveOrgService _archive = ArchiveOrgService();
   final TextEditingController _searchController = TextEditingController();
+  CatalogSource _source = CatalogSource.kinopoisk;
   List<Movie> _movies = [];
   bool _isLoading = true;
   String? _error;
+
+  // Debounce поискового ввода фильмов.
+  Timer? _searchDebounce;
+  String _lastSearchQuery = '';
+  static const _searchDebounceDuration = Duration(milliseconds: 400);
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      if (_lastSearchQuery.isNotEmpty) {
+        _lastSearchQuery = '';
+        _loadTrending();
+      }
+      return;
+    }
+    _searchDebounce = Timer(_searchDebounceDuration, () {
+      if (!mounted) return;
+      if (trimmed == _lastSearchQuery) return;
+      _lastSearchQuery = trimmed;
+      _searchMovies(trimmed);
+    });
+  }
+
+  Future<List<Movie>> _trending() => _source == CatalogSource.kinopoisk
+      ? _kinopoisk.getTrendingMovies()
+      : _archive.getTrendingMovies();
+
+  Future<List<Movie>> _search(String q) => _source == CatalogSource.kinopoisk
+      ? _kinopoisk.searchMovies(q)
+      : _archive.searchMovies(q);
 
   @override
   void initState() {
@@ -32,7 +69,7 @@ class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
       _error = null;
     });
     try {
-      final movies = await _tmdbService.getTrendingMovies();
+      final movies = await _trending();
       if (mounted) {
         setState(() {
           _movies = movies;
@@ -59,7 +96,7 @@ class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
       _error = null;
     });
     try {
-      final movies = await _tmdbService.searchMovies(query);
+      final movies = await _search(query);
       if (mounted) {
         setState(() {
           _movies = movies;
@@ -78,28 +115,65 @@ class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Movies'),
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(60),
+          preferredSize: const Size.fromHeight(116),
           child: Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: SearchBar(
-              controller: _searchController,
-              hintText: 'Search movies...',
-              onSubmitted: _searchMovies,
-              leading: const Icon(Icons.search),
-              trailing: [
-                if (_searchController.text.isNotEmpty)
-                  IconButton(
-                    icon: const Icon(Icons.clear),
-                    onPressed: () {
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            child: Column(
+              children: [
+                SegmentedButton<CatalogSource>(
+                  segments: const [
+                    ButtonSegment(
+                      value: CatalogSource.kinopoisk,
+                      label: Text('Kinopoisk'),
+                      icon: Icon(Icons.movie_filter_outlined),
+                    ),
+                    ButtonSegment(
+                      value: CatalogSource.archive,
+                      label: Text('Archive.org'),
+                      icon: Icon(Icons.public),
+                    ),
+                  ],
+                  selected: {_source},
+                  onSelectionChanged: (set) {
+                    setState(() {
+                      _source = set.first;
                       _searchController.clear();
-                      _loadTrending();
-                    },
-                  ),
+                    });
+                    _loadTrending();
+                  },
+                ),
+                const SizedBox(height: 8),
+                SearchBar(
+                  controller: _searchController,
+                  hintText: 'Search movies...',
+                  onChanged: _onSearchChanged,
+                  onSubmitted: (q) {
+                    _searchDebounce?.cancel();
+                    final trimmed = q.trim();
+                    if (trimmed.isEmpty || trimmed == _lastSearchQuery) {
+                      return;
+                    }
+                    _lastSearchQuery = trimmed;
+                    _searchMovies(trimmed);
+                  },
+                  leading: const Icon(Icons.search),
+                  trailing: [
+                    if (_searchController.text.isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _searchDebounce?.cancel();
+                          _searchController.clear();
+                          _lastSearchQuery = '';
+                          _loadTrending();
+                        },
+                      ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -177,7 +251,9 @@ class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
 
   @override
   void dispose() {
-    _tmdbService.dispose();
+    _searchDebounce?.cancel();
+    _kinopoisk.dispose();
+    _archive.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -201,41 +277,55 @@ class _MovieCard extends StatelessWidget {
       },
       child: Hero(
         tag: 'movie-${movie.id}',
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            image: movie.posterPath.isNotEmpty
-                ? DecorationImage(
-                    image: NetworkImage(movie.posterUrl),
-                    fit: BoxFit.cover,
-                  )
-                : null,
-            color: Colors.grey[900],
-          ),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  Colors.black.withOpacity(0.8),
-                ],
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Постер — кэшируется на диске, без повторных загрузок.
+              if (movie.posterUrl.isNotEmpty)
+                CachedNetworkImage(
+                  imageUrl: movie.posterUrl,
+                  fit: BoxFit.cover,
+                  fadeInDuration: const Duration(milliseconds: 200),
+                  placeholder: (_, __) => Container(color: Colors.grey[900]),
+                  errorWidget: (_, __, ___) =>
+                      Container(color: Colors.grey[900]),
+                )
+              else
+                Container(color: Colors.grey[900]),
+
+              // Градиент для читаемости заголовка.
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black.withOpacity(0.8),
+                    ],
+                  ),
+                ),
               ),
-            ),
-            padding: const EdgeInsets.all(12),
-            alignment: Alignment.bottomLeft,
-            child: Text(
-              movie.title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
+
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Text(
+                    movie.title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
+            ],
           ),
         ),
       ),
