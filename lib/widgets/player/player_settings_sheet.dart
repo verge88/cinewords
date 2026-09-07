@@ -141,32 +141,61 @@ class _TabButton extends StatelessWidget {
 class _QualityTab extends StatelessWidget {
   final PlayerProvider pp;
   final Future<void> Function(String? quality)? onQualityChanged;
-  
-  const _QualityTab({required this.pp, this.onQualityChanged});
+
+  const _QualityTab({
+    required this.pp,
+    this.onQualityChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final qualities = [null, ...pp.availableQualities]; // null is Auto
-    
+    final manualQualities = pp.availableQualities
+        .where(
+          (quality) =>
+              quality.isNotEmpty &&
+              quality.toLowerCase() != 'auto',
+        )
+        .toSet()
+        .toList()
+      ..sort((a, b) {
+        final aHeight =
+            int.tryParse(a.replaceAll('p', '')) ?? 0;
+        final bHeight =
+            int.tryParse(b.replaceAll('p', '')) ?? 0;
+
+        return bHeight.compareTo(aHeight);
+      });
+
+    final qualities = <String?>[
+      null,
+      ...manualQualities,
+    ];
+
     return Column(
       key: const ValueKey('quality'),
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: qualities.map((q) {
+      children: qualities.map((quality) {
         return RadioListTile<String?>(
-          value: q,
+          value: quality,
           groupValue: pp.selectedQuality,
-          title: Text(q == null ? 'Auto (Highest Bitrate)' : q),
-          activeColor: Theme.of(context).colorScheme.primary,
-          onChanged: (val) {
-            onQualityChanged?.call(val);
-            Navigator.pop(context); // Close sheet
+          title: Text(
+            quality == null
+                ? 'Auto (Adaptive)'
+                : quality,
+          ),
+          activeColor:
+              Theme.of(context).colorScheme.primary,
+          onChanged: (value) {
+            Navigator.pop(context);
+            onQualityChanged?.call(value);
           },
         );
       }).toList(),
     );
   }
 }
+
 
 class _SpeedTab extends StatelessWidget {
   final PlayerProvider pp;

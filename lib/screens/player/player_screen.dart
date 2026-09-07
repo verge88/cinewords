@@ -50,6 +50,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _isExtracting = false;
   String? _error;
   bool _showSubList = false;
+  bool _isChangingQuality = false;
+  int _qualityRequestId = 0;
+
+  String? _currentMediaUrl;
+  Map<String, String>? _currentMediaHeaders;
+
 
   final Stopwatch _watchStopwatch = Stopwatch();
 
@@ -85,10 +91,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     _subs.add(_player.stream.error.listen((error) {
       debugPrint('[Player] Error: $error');
-      if (mounted && error.isNotEmpty) {
+
+      // При смене media source backend может временно отправить ошибку
+      // старого потока. Не переводим весь экран в состояние ошибки.
+      if (mounted && error.isNotEmpty && !_isChangingQuality) {
         setState(() => _error = 'Playback error: $error');
       }
     }));
+
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
@@ -114,115 +124,319 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // ──────────────────────────────── loading ────────────────────────────────
 
   Future<void> _load() async {
+  if (!mounted) return;
+
+  setState(() {
+    _loading = true;
+    _error = null;
+  });
+
+  try {
+    String url;
+    Map<String, String>? headers;
+    VideoItem effectiveVideo = widget.video;
+
+    if (widget.video.sourceType == 'vidapi') {
+      debugPrint(
+        '[Player] Resolving stream via MovieStreamService...',
+      );
+
+      if (mounted) {
+        setState(() => _isExtracting = true);
+      }
+
+      final tmdbId = int.tryParse(widget.video.youtubeId);
+
+      if (tmdbId == null) {
+        throw Exception('У фильма отсутствует TMDB id');
+      }
+
+      final stream = await MovieStreamService.fetchStream(
+        tmdbId: tmdbId,
+        imdbId: widget.video.imdbId,
+      );
+
+      if (!mounted) return;
+
+      setState(() => _isExtracting = false);
+
+      if (stream == null) {
+        throw Exception(
+          'Не удалось получить поток фильма. '
+          'Возможно, он недоступен у Rivestream-провайдеров.',
+        );
+      }
+
+      url = stream.url;
+      headers = stream.headers;
+
+      _pp.setAvailableQualities(
+        stream.qualities
+            .map((quality) => quality.quality)
+            .where((quality) => quality != 'Auto')
+            .toSet()
+            .toList(),
+      );
+
+      final enSubtitle = stream.subtitleFor('en');
+      final ruSubtitle = stream.subtitleFor('ru');
+
+      effectiveVideo = widget.video.copyWith(
+        subtitleUrl: enSubtitle?.url,
+        subtitleUrlRu: ruSubtitle?.url,
+      );
+    } else if (widget.video.sourceType == 'direct' &&
+        widget.video.videoUrl != null) {
+      url = widget.video.videoUrl!;
+      _pp.setAvailableQualities(const []);
+    } else {
+      debugPrint(
+        '[Player] Getting stream for ${widget.video.youtubeId}...',
+      );
+
+      final resolution = await _streamService.resolve(
+        widget.video.youtubeId,
+      );
+
+      if (!mounted) return;
+
+      _pp.setAvailableQualities(
+        resolution.qualities
+            .where((quality) => quality != 'Auto')
+            .toSet()
+            .toList(),
+      );
+
+      url = resolution.url;
+    }
+
+    // Субтитры загружаются параллельно.
+    _pp.loadVideo(effectiveVideo);
+
+    await _player.open(
+      Media(
+        url,
+        httpHeaders: headers,
+      ),
+      play: true,
+    );
+
     if (!mounted) return;
+
+    _currentMediaUrl = url;
+    _currentMediaHeaders = headers;
+
+    // null соответствует Auto в PlayerSettingsSheet.
+    _pp.setSelectedQuality(null);
+
     setState(() {
-      _loading = true;
+      _loading = false;
       _error = null;
+    });
+  } catch (e) {
+    debugPrint('[Player] Error loading video: $e');
+
+    if (mounted) {
+      setState(() {
+        _loading = false;
+        _isExtracting = false;
+        _error = e.toString().replaceAll('Exception: ', '');
+      });
+    }
+  }
+}
+
+
+
+  Future<void> _changeQuality(String? newQuality) async {
+    if (!mounted || _isChangingQuality) {
+      return;
+    }
+
+    // null означает Auto.
+    final requestedQuality =
+        newQuality == 'Auto' ? null : newQuality;
+
+    if (requestedQuality == _pp.selectedQuality) {
+      return;
+    }
+
+    // Для этих источников текущая реализация не умеет выбирать
+    // URL качества через StreamService.
+    if (widget.video.sourceType == 'vidapi') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Переключение качества для этого источника пока недоступно',
+            ),
+          ),
+        );
+      }
+
+      return;
+    }
+
+    if (widget.video.sourceType == 'direct') {
+      return;
+    }
+
+    final previousQuality = _pp.selectedQuality;
+    final previousUrl = _currentMediaUrl;
+    final previousHeaders = _currentMediaHeaders;
+
+    final requestId = ++_qualityRequestId;
+
+    setState(() {
+      _isChangingQuality = true;
     });
 
     try {
-      String url;
-      Map<String, String>? headers;
-      VideoItem effectiveVideo = widget.video;
+      debugPrint(
+        '[Player] Resolving quality: '
+        '${requestedQuality ?? "Auto"}',
+      );
 
-      if (widget.video.sourceType == 'vidapi') {
-        debugPrint('[Player] Resolving stream via MovieStreamService...');
-        if (mounted) setState(() => _isExtracting = true);
+      // Сначала получаем новый URL.
+      //
+      // Пока resolve выполняется, старый поток продолжает воспроизводиться.
+      // Позицию намеренно сохраняем после resolve, а не до него.
+      final resolution = await _streamService.resolve(
+        widget.video.youtubeId,
+        quality: requestedQuality,
+      );
 
-        final tmdbId = int.tryParse(widget.video.youtubeId);
-        if (tmdbId == null) {
-          throw Exception('У фильма отсутствует TMDB id');
-        }
-        final stream = await MovieStreamService.fetchStream(
-          tmdbId: tmdbId,
-          imdbId: widget.video.imdbId,
-        );
-        if (!mounted) return;
-        setState(() => _isExtracting = false);
-        if (stream == null) {
-          throw Exception('Не удалось получить поток фильма. '
-              'Возможно, он недоступен у Rivestream-провайдеров.');
-        }
-        url = stream.url;
-        headers = stream.headers;
-
-        _pp.setAvailableQualities(
-          stream.qualities.isEmpty
-              ? const ['Auto']
-              : stream.qualities.map((q) => q.quality).toList(),
-        );
-
-        final enSub = stream.subtitleFor('en');
-        final ruSub = stream.subtitleFor('ru');
-        effectiveVideo = widget.video.copyWith(
-          subtitleUrl: enSub?.url,
-          subtitleUrlRu: ruSub?.url,
-        );
-      } else if (widget.video.sourceType == 'direct' &&
-          widget.video.videoUrl != null) {
-        url = widget.video.videoUrl!;
-        _pp.setAvailableQualities(const ['Auto']);
-      } else {
-        debugPrint('[Player] Getting stream for ${widget.video.youtubeId}...');
-        // Один манифест на URL и на список качеств.
-        final res = await _streamService.resolve(widget.video.youtubeId);
-        if (!mounted) return;
-        _pp.setAvailableQualities(
-            res.qualities.isEmpty ? const ['Auto'] : res.qualities);
-        url = res.url;
+      if (!mounted || requestId != _qualityRequestId) {
+        return;
       }
 
-      // Запускаем загрузку субтитров. Без этого вызова панель реплик
-      // и оверлей в fullscreen остаются пустыми. Не await — субтитры
-      // догружаются параллельно с открытием потока.
-      _pp.loadVideo(effectiveVideo);
+      final position = _player.state.position;
+      final wasPlaying = _player.state.playing;
 
-      await _player.open(Media(url, httpHeaders: headers), play: true);
+      debugPrint(
+        '[Player] Changing quality: '
+        '${previousQuality ?? "Auto"} -> '
+        '${requestedQuality ?? "Auto"}, '
+        'position=${position.inMilliseconds}ms, '
+        'hls=${resolution.isHls}',
+      );
 
-      if (mounted) setState(() => _loading = false);
-    } catch (e) {
-      debugPrint('[Player] Error loading video: $e');
+      // Media.start передаёт стартовую позицию непосредственно новому
+      // media source. Это надёжнее, чем seek сразу после open.
+      await _player.open(
+        Media(
+          resolution.url,
+          start: position,
+        ),
+        play: wasPlaying,
+      );
+
+      if (!mounted || requestId != _qualityRequestId) {
+        return;
+      }
+
+      // На некоторых Android-устройствах HLS/muxed backend может
+      // проигнорировать start при первой инициализации декодера.
+      // Проверяем фактическую позицию и при необходимости повторяем seek.
+      await Future<void>.delayed(
+        const Duration(milliseconds: 350),
+      );
+
+      if (!mounted || requestId != _qualityRequestId) {
+        return;
+      }
+
+      final actualPosition = _player.state.position;
+
+      final positionDifference = (actualPosition.inMilliseconds -
+              position.inMilliseconds)
+          .abs();
+
+      if (position.inMilliseconds > 1000 &&
+          positionDifference > 2000) {
+        debugPrint(
+          '[Player] Position was not restored: '
+          'expected=${position.inMilliseconds}, '
+          'actual=${actualPosition.inMilliseconds}. Retrying seek...',
+        );
+
+        await _player.seek(position);
+      }
+
+      if (wasPlaying && !_player.state.playing) {
+        await _player.play();
+      } else if (!wasPlaying && _player.state.playing) {
+        await _player.pause();
+      }
+
+      _currentMediaUrl = resolution.url;
+      _currentMediaHeaders = null;
+
+      // Обновляем выбранное качество только после успешного open.
+      _pp.setSelectedQuality(requestedQuality);
+
+      debugPrint(
+        '[Player] Quality changed successfully: '
+        '${requestedQuality ?? "Auto"}, '
+        'position=${_player.state.position.inMilliseconds}ms',
+      );
+    } catch (e, stackTrace) {
+      debugPrint('[Player] Error changing quality: $e');
+      debugPrintStack(stackTrace: stackTrace);
+
+      // Если новый URL уже начал открываться, но open завершился ошибкой,
+      // пробуем восстановить предыдущий поток.
+      if (mounted && previousUrl != null) {
+        try {
+          final restorePosition = _pp.position;
+          final shouldPlay = _pp.isPlaying;
+
+          debugPrint(
+            '[Player] Restoring previous stream at '
+            '${restorePosition.inMilliseconds}ms',
+          );
+
+          await _player.open(
+            Media(
+              previousUrl,
+              httpHeaders: previousHeaders,
+              start: restorePosition,
+            ),
+            play: shouldPlay,
+          );
+
+          _currentMediaUrl = previousUrl;
+          _currentMediaHeaders = previousHeaders;
+        } catch (restoreError) {
+          debugPrint(
+            '[Player] Could not restore previous stream: '
+            '$restoreError',
+          );
+        }
+      }
+
+      // Возвращаем прежнее значение радиокнопки.
+      _pp.setSelectedQuality(previousQuality);
+
       if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Не удалось сменить качество: '
+              '${e.toString().replaceAll("Exception: ", "")}',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted && requestId == _qualityRequestId) {
         setState(() {
-          _loading = false;
-          _isExtracting = false;
-          _error = e.toString().replaceAll('Exception: ', '');
+          _isChangingQuality = false;
         });
       }
     }
   }
 
-
-  Future<void> _changeQuality(String? newQuality) async {
-    if (!mounted || newQuality == _pp.selectedQuality) return;
-    _pp.setSelectedQuality(newQuality);
-
-    final pos = _player.state.position;
-    final wasPlaying = _player.state.playing;
-
-    try {
-      String url;
-      if (widget.video.sourceType == 'vidapi') {
-        return;
-      } else if (widget.video.sourceType == 'direct' &&
-          widget.video.videoUrl != null) {
-        url = widget.video.videoUrl!;
-      } else {
-        url = await _streamService.getPlayableUrl(widget.video.youtubeId,
-            quality: newQuality);
-      }
-      await _player.open(Media(url), play: false);
-      await _player.seek(pos);
-      if (wasPlaying) _player.play();
-    } catch (e) {
-      debugPrint('[Player] Error changing quality: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось сменить качество: $e')),
-        );
-      }
-    }
-  }
 
   // ──────────────────────────────── actions ────────────────────────────────
 
