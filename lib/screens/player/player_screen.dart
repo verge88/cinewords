@@ -159,18 +159,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _pp.setAvailableQualities(const ['Auto']);
       } else {
         debugPrint('[Player] Getting stream for ${widget.video.youtubeId}...');
-        final qualities =
-            await _streamService.getAvailableQualities(widget.video.youtubeId);
+        // Один манифест на URL и на список качеств.
+        final res = await _streamService.resolve(widget.video.youtubeId);
         if (!mounted) return;
-        _pp.setAvailableQualities(qualities);
-        url = await _streamService.getPlayableUrl(widget.video.youtubeId);
+        _pp.setAvailableQualities(
+            res.qualities.isEmpty ? const ['Auto'] : res.qualities);
+        url = res.url;
       }
-      
-      final res = await _streamService.resolve(widget.video.youtubeId);
-      if (!mounted) return;
-      _pp.setAvailableQualities(
-          res.qualities.isEmpty ? const ['Auto'] : res.qualities);
-      url = res.url;
+
+      // Запускаем загрузку субтитров. Без этого вызова панель реплик
+      // и оверлей в fullscreen остаются пустыми. Не await — субтитры
+      // догружаются параллельно с открытием потока.
+      _pp.loadVideo(effectiveVideo);
 
       await _player.open(Media(url, httpHeaders: headers), play: true);
 
@@ -186,6 +186,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
     }
   }
+
 
   Future<void> _changeQuality(String? newQuality) async {
     if (!mounted || newQuality == _pp.selectedQuality) return;
