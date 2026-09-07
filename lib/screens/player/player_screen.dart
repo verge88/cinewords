@@ -529,31 +529,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     return Video(
       controller: _videoController,
-      controls: (state) {
-        final fs = isFullscreen(context);
+      // Tear-off, а не свежее замыкание на каждый build: иначе Video
+      // видит "новые" controls каждый кадр и лишний раз обновляет
+      // videoViewParametersNotifier.
+      controls: _videoControls,
+    );
+  }
+/// Контролы плеера. Контекст берём через [Builder] — он находится ниже
+  /// `FullscreenInheritedWidget`, поэтому `isFullscreen` даёт корректный
+  /// ответ и во врезке, и в полноэкранном роуте.
+  Widget _videoControls(VideoState state) {
+    return Builder(
+      builder: (ctx) {
+        final fs = isFullscreen(ctx);
         return Stack(
           children: [
-            CustomVideoControls(
-              player: _player,
-              title: widget.video.title,
-              isFullscreen: fs,
-              onToggleFullscreen: () =>
-                  fs ? state.exitFullscreen() : state.enterFullscreen(),
-              onSettingsTap: _showSettingsSheet,
-              onBackTap: () =>
-                  fs ? state.exitFullscreen() : Navigator.of(context).pop(),
-            ),
-            if (fs)
-              _SubtitleOverlay(
-                pp: pp,
-                onWordTap: _onWordTap,
+            Positioned.fill(
+              child: CustomVideoControls(
+                player: _player,
+                title: widget.video.title,
+                isFullscreen: fs,
+                onToggleFullscreen: () => toggleFullscreen(ctx),
+                onSettingsTap: _showSettingsSheet,
+                onBackTap: () => fs
+                    ? exitFullscreen(ctx)
+                    : Navigator.of(ctx).maybePop(),
               ),
+            ),
+            // Субтитры поверх видео нужны только в fullscreen: во врезке
+            // их показывает широкая панель под плеером.
+            if (fs)
+              _SubtitleOverlay(onWordTap: _onWordTap),
           ],
         );
       },
     );
   }
-
   Widget _subList(PlayerProvider pp) {
     final cs = Theme.of(context).colorScheme;
     if (pp.isLoadingSubs) {
@@ -874,68 +885,77 @@ class _SubtitlePanel extends StatelessWidget {
 // ─────────────────────── субтитры поверх видео (fullscreen) ──────────────────
 
 class _SubtitleOverlay extends StatelessWidget {
-  final PlayerProvider pp;
   final void Function(String word, SubtitleLine line) onWordTap;
 
-  const _SubtitleOverlay({required this.pp, required this.onWordTap});
+  const _SubtitleOverlay({required this.onWordTap});
 
   @override
   Widget build(BuildContext context) {
-    if (!pp.onVideoSubtitlesEnabled) return const SizedBox.shrink();
+    return Consumer<PlayerProvider>(
+      builder: (context, pp, _) {
+        if (!pp.onVideoSubtitlesEnabled) return const SizedBox.shrink();
 
-    final en = pp.currentEnglishLine;
-    final ru = pp.currentRussianLine;
-    if (en == null && ru == null) return const SizedBox.shrink();
+        final en = pp.currentEnglishLine;
+        final ru = pp.currentRussianLine;
+        if (en == null && ru == null) return const SizedBox.shrink();
 
-    final scale = pp.subtitleScale;
+        final scale = pp.subtitleScale;
+        final translation = ru?.text ?? en?.translation;
 
-    return Positioned(
-      left: 16,
-      right: 16,
-      bottom: pp.subtitleBottomPadding,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (en != null)
-            _OverlayTextWrapper(
-              child: Padding(
-                padding: EdgeInsets.all(10 * scale),
-                child: TappableSubtitleText(
-                  line: en,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20 * scale,
-                    fontWeight: FontWeight.w700,
-                    shadows: const [Shadow(blurRadius: 4, color: Colors.black)],
-                  ),
-                  onWordTap: onWordTap,
-                  accentColor: Colors.yellow,
-                ),
-              ),
-            ),
-          if (pp.showTranslation && (ru != null || en?.translation != null))
-            _OverlayTextWrapper(
-              isRussian: true,
-              child: Padding(
-                padding: EdgeInsets.symmetric(
-                    horizontal: 14 * scale, vertical: 7 * scale),
-                child: Text(
-                  ru?.text ?? en?.translation ?? '',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16 * scale,
-                    fontWeight: FontWeight.w500,
-                    shadows: const [Shadow(blurRadius: 4, color: Colors.black)],
+        return Positioned(
+          left: 16,
+          right: 16,
+          bottom: pp.subtitleBottomPadding,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (en != null)
+                _OverlayTextWrapper(
+                  child: Padding(
+                    padding: EdgeInsets.all(10 * scale),
+                    child: TappableSubtitleText(
+                      line: en,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20 * scale,
+                        fontWeight: FontWeight.w700,
+                        shadows: const [
+                          Shadow(blurRadius: 4, color: Colors.black)
+                        ],
+                      ),
+                      onWordTap: onWordTap,
+                      accentColor: Colors.yellow,
+                    ),
                   ),
                 ),
-              ),
-            ),
-        ],
-      ),
+              if (pp.showTranslation && translation != null)
+                _OverlayTextWrapper(
+                  isRussian: true,
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(
+                        horizontal: 14 * scale, vertical: 7 * scale),
+                    child: Text(
+                      translation,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16 * scale,
+                        fontWeight: FontWeight.w500,
+                        shadows: const [
+                          Shadow(blurRadius: 4, color: Colors.black)
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
+
 
 class _OverlayTextWrapper extends StatelessWidget {
   final Widget child;
