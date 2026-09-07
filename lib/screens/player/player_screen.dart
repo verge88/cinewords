@@ -165,9 +165,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _pp.setAvailableQualities(qualities);
         url = await _streamService.getPlayableUrl(widget.video.youtubeId);
       }
-
+      
+      final res = await _streamService.resolve(widget.video.youtubeId);
       if (!mounted) return;
-      _pp.loadVideo(effectiveVideo);
+      _pp.setAvailableQualities(
+          res.qualities.isEmpty ? const ['Auto'] : res.qualities);
+      url = res.url;
 
       await _player.open(Media(url, httpHeaders: headers), play: true);
 
