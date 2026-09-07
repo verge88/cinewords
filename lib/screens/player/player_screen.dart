@@ -61,6 +61,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     super.initState();
     _pp = context.read<PlayerProvider>();
 
+    // Сбрасываем данные предыдущего видео до первого build.
+    // notify: false нужен, чтобы не вызывать notifyListeners во время
+    // построения нового маршрута.
+    _pp.prepareVideo(widget.video, notify: false);
+
     _player = Player();
     _videoController = VideoController(_player);
 

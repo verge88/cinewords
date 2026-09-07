@@ -47,16 +47,8 @@ class PlayerProvider extends ChangeNotifier {
   String? get selectedQuality => _selectedQuality;
 
   Future<void> loadVideo(VideoItem video) async {
-    _currentVideo = video;
-    _englishSubs = [];
-    _russianSubs = [];
-    _currentEnglishLine = null;
-    _currentRussianLine = null;
-    _lastEnIndex = -1;
-    _lastRuIndex = -1;
-    _subtitleError = null;
-    _isLoadingSubs = true;
-    notifyListeners();
+    prepareVideo(video);
+
 
     // Для фильмов (vidapi) загружаем субтитры из OpenSubtitles
     if (video.sourceType == 'vidapi') {
@@ -413,6 +405,39 @@ class PlayerProvider extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+
+    /// Синхронно подготавливает состояние для нового видео.
+  ///
+  /// Вызывается сразу при открытии PlayerScreen, чтобы интерфейс не показывал
+  /// субтитры, позицию и последнюю реплику предыдущего видео, пока загружается
+  /// новый видеопоток.
+  void prepareVideo(VideoItem video, {bool notify = true}) {
+    _currentVideo = video;
+
+    _englishSubs = [];
+    _russianSubs = [];
+    _currentEnglishLine = null;
+    _currentRussianLine = null;
+
+    _lastEnIndex = -1;
+    _lastRuIndex = -1;
+
+    _position = Duration.zero;
+    _isPlaying = false;
+
+    _isLoadingSubs = true;
+    _isAutoTranslating = false;
+    _subtitleError = null;
+
+    _availableQualities = [];
+    _selectedQuality = null;
+
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
 
   /// Быстрый поиск активной строки за O(log n) бинарным поиском.
   /// Сначала пробует hot-path: предыдущий индекс / следующий за ним
