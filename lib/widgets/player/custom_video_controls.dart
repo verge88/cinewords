@@ -1,7 +1,7 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 
 class CustomVideoControls extends StatefulWidget {
   final Player player;
@@ -25,65 +25,54 @@ class CustomVideoControls extends StatefulWidget {
   State<CustomVideoControls> createState() => _CustomVideoControlsState();
 }
 
-class _CustomVideoControlsState extends State<CustomVideoControls> with SingleTickerProviderStateMixin {
-  bool _isVisible = false;
+class _CustomVideoControlsState extends State<CustomVideoControls> {
+  bool _isVisible = true;
   Timer? _hideTimer;
-  
+
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _isPlaying = false;
-  double _buffer = 0.0;
 
-  late StreamSubscription _positionSub;
-  late StreamSubscription _durationSub;
-  late StreamSubscription _playingSub;
-  late StreamSubscription _bufferSub;
+  /// Позиция, которую пользователь тянет прямо сейчас. Пока ползунок зажат,
+  /// слайдер показывает её, а не приходящую из плеера позицию — иначе
+  /// значение дёргается между пальцем и потоком position.
+  double? _dragValue;
+
+  final List<StreamSubscription<dynamic>> _subs = [];
 
   @override
   void initState() {
     super.initState();
-    _isVisible = true;
     _startHideTimer();
 
     _position = widget.player.state.position;
     _duration = widget.player.state.duration;
     _isPlaying = widget.player.state.playing;
-    _buffer = widget.player.state.buffer.inMilliseconds.toDouble() / (_duration.inMilliseconds.toDouble() > 0 ? _duration.inMilliseconds.toDouble() : 1);
 
-    _positionSub = widget.player.stream.position.listen((pos) {
-      if (mounted) setState(() => _position = pos);
-    });
-    _durationSub = widget.player.stream.duration.listen((dur) {
+    _subs.add(widget.player.stream.position.listen((pos) {
+      if (mounted && _dragValue == null) setState(() => _position = pos);
+    }));
+    _subs.add(widget.player.stream.duration.listen((dur) {
       if (mounted) setState(() => _duration = dur);
-    });
-    _playingSub = widget.player.stream.playing.listen((playing) {
-      if (mounted) {
-        setState(() => _isPlaying = playing);
-        if (playing) {
-          _startHideTimer();
-        } else {
-          _hideTimer?.cancel();
-          setState(() => _isVisible = true);
-        }
+    }));
+    _subs.add(widget.player.stream.playing.listen((playing) {
+      if (!mounted) return;
+      setState(() => _isPlaying = playing);
+      if (playing) {
+        _startHideTimer();
+      } else {
+        _hideTimer?.cancel();
+        setState(() => _isVisible = true);
       }
-    });
-    _bufferSub = widget.player.stream.buffer.listen((buffer) {
-      if (mounted) {
-        final total = _duration.inMilliseconds.toDouble();
-        if (total > 0) {
-          setState(() => _buffer = buffer.inMilliseconds / total);
-        }
-      }
-    });
+    }));
   }
 
   @override
   void dispose() {
     _hideTimer?.cancel();
-    _positionSub.cancel();
-    _durationSub.cancel();
-    _playingSub.cancel();
-    _bufferSub.cancel();
+    for (final sub in _subs) {
+      sub.cancel();
+    }
     super.dispose();
   }
 
@@ -99,9 +88,7 @@ class _CustomVideoControlsState extends State<CustomVideoControls> with SingleTi
   void _startHideTimer() {
     _hideTimer?.cancel();
     _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && _isPlaying) {
-        setState(() => _isVisible = false);
-      }
+      if (mounted && _isPlaying) setState(() => _isVisible = false);
     });
   }
 
@@ -109,12 +96,22 @@ class _CustomVideoControlsState extends State<CustomVideoControls> with SingleTi
     if (_isVisible) _startHideTimer();
   }
 
-  String _formatDuration(Duration d) {
+  void _seekBy(int seconds) {
+    _onInteraction();
+    final target = _position + Duration(seconds: seconds);
+    if (target < Duration.zero) {
+      widget.player.seek(Duration.zero);
+    } else if (_duration > Duration.zero && target > _duration) {
+      widget.player.seek(_duration);
+    } else {
+      widget.player.seek(target);
+    }
+  }
+
+  String _format(Duration d) {
     final minutes = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final seconds = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-    if (d.inHours > 0) {
-      return '${d.inHours}:$minutes:$seconds';
-    }
+    if (d.inHours > 0) return '${d.inHours}:$minutes:$seconds';
     return '$minutes:$seconds';
   }
 
@@ -126,71 +123,153 @@ class _CustomVideoControlsState extends State<CustomVideoControls> with SingleTi
       child: MouseRegion(
         onHover: (_) => _onInteraction(),
         child: AnimatedOpacity(
-          opacity: _isVisible ? 1.0 : 0.0,
-          duration: const Duration(milliseconds: 300),
+          opacity: _isVisible ? 1 : 0,
+          duration: const Duration(milliseconds: 250),
           child: IgnorePointer(
             ignoring: !_isVisible,
-            child: Container(
-              color: Colors.black45, // Dark overlay
-              child: Column(
-                children: [
-                  // Top Bar
-                  _buildTopBar(),
-                  
-                  // Center Play/Pause
-                  Expanded(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        IconButton(
-                          onPressed: () {
-                            _onInteraction();
-                            var target = widget.player.state.position - const Duration(seconds: 10);
-                            widget.player.seek(target > Duration.zero ? target : Duration.zero);
-                          },
-                          icon: Icon(Icons.replay_10_rounded, color: Colors.white, size: widget.isFullscreen ? 36 : 48),
-                        ),
-                        IconButton.filled(
-                          onPressed: () {
-                            _onInteraction();
-                            widget.player.playOrPause();
-                          },
-                          icon: Icon(
-                            _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                            size: widget.isFullscreen ? 36 : 48,
-                          ),
-                          style: IconButton.styleFrom(
-                            backgroundColor: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.8),
-                            foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
-                            fixedSize: widget.isFullscreen ? const Size(34, 34) : const Size(80, 80),
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () {
-                            _onInteraction();
-                            var target = widget.player.state.position + const Duration(seconds: 10);
-                            widget.player.seek(target < _duration ? target : _duration);
-                          },
-                          icon: Icon(Icons.forward_10_rounded, color: Colors.white, size: widget.isFullscreen ? 36 : 48),
-                        ),
-                      ],
-                    ),
-                  ),
+            // Размеры считаются от фактической высоты области видео,
+            // а не от флага полноэкранного режима: во врезке 16:9 на
+            // телефоне высоты ~260 px, и прежние иконки 48 с кнопкой
+            // 80×80 не вмещались вместе с прогресс-баром.
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final metrics = _ControlMetrics.forHeight(constraints.maxHeight);
 
-                  // Bottom Bar
-                  _buildBottomBar(),
-                ],
-              ),
+                return ColoredBox(
+                  color: Colors.black38,
+                  child: Column(
+                    children: [
+                      // Заголовок и «назад» нужны только в полноэкранном
+                      // режиме: во врезке их дублирует AppBar экрана.
+                      if (widget.isFullscreen)
+                        _TopBar(
+                          title: widget.title,
+                          iconSize: metrics.barIcon,
+                          onBackTap: widget.onBackTap,
+                        )
+                      else
+                        const SizedBox(height: 4),
+
+                      Expanded(
+                        child: Center(
+                          child: _CenterControls(
+                            metrics: metrics,
+                            isPlaying: _isPlaying,
+                            onRewind: () => _seekBy(-10),
+                            onForward: () => _seekBy(10),
+                            onPlayPause: () {
+                              _onInteraction();
+                              widget.player.playOrPause();
+                            },
+                          ),
+                        ),
+                      ),
+
+                      _BottomBar(
+                        metrics: metrics,
+                        position: _position,
+                        duration: _duration,
+                        dragValue: _dragValue,
+                        isFullscreen: widget.isFullscreen,
+                        format: _format,
+                        onDragStart: (value) => setState(() => _dragValue = value),
+                        onDragUpdate: (value) => setState(() => _dragValue = value),
+                        onDragEnd: (value) {
+                          widget.player.seek(Duration(milliseconds: value.toInt()));
+                          setState(() {
+                            _position = Duration(milliseconds: value.toInt());
+                            _dragValue = null;
+                          });
+                          _onInteraction();
+                        },
+                        onSettingsTap: () {
+                          _hideTimer?.cancel();
+                          widget.onSettingsTap();
+                        },
+                        onToggleFullscreen: widget.onToggleFullscreen,
+                      ),
+                    ],
+                  ),
+                );
+              },
             ),
           ),
         ),
       ),
     );
   }
+}
 
-  Widget _buildTopBar() {
+/// Набор размеров, подобранный под доступную высоту области видео.
+class _ControlMetrics {
+  const _ControlMetrics({
+    required this.playButton,
+    required this.playIcon,
+    required this.seekIcon,
+    required this.barIcon,
+    required this.fontSize,
+    required this.trackHeight,
+    required this.thumbRadius,
+  });
+
+  final double playButton;
+  final double playIcon;
+  final double seekIcon;
+  final double barIcon;
+  final double fontSize;
+  final double trackHeight;
+  final double thumbRadius;
+
+  factory _ControlMetrics.forHeight(double height) {
+    if (height < 200) {
+      return const _ControlMetrics(
+        playButton: 42,
+        playIcon: 24,
+        seekIcon: 22,
+        barIcon: 17,
+        fontSize: 10,
+        trackHeight: 2,
+        thumbRadius: 5,
+      );
+    }
+    if (height < 300) {
+      return const _ControlMetrics(
+        playButton: 52,
+        playIcon: 30,
+        seekIcon: 26,
+        barIcon: 19,
+        fontSize: 11,
+        trackHeight: 3,
+        thumbRadius: 6,
+      );
+    }
+    return const _ControlMetrics(
+      playButton: 68,
+      playIcon: 38,
+      seekIcon: 32,
+      barIcon: 22,
+      fontSize: 12,
+      trackHeight: 4,
+      thumbRadius: 7,
+    );
+  }
+}
+
+class _TopBar extends StatelessWidget {
+  const _TopBar({
+    required this.title,
+    required this.iconSize,
+    required this.onBackTap,
+  });
+
+  final String title;
+  final double iconSize;
+  final VoidCallback onBackTap;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
@@ -203,21 +282,22 @@ class _CustomVideoControlsState extends State<CustomVideoControls> with SingleTi
         child: Row(
           children: [
             IconButton(
-              iconSize: widget.isFullscreen ? 20 : 24,
+              iconSize: iconSize,
+              visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-              onPressed: widget.onBackTap,
+              onPressed: onBackTap,
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 4),
             Expanded(
               child: Text(
-                widget.title,
-                style: TextStyle(
-                  color: Colors.white, 
-                  fontSize: widget.isFullscreen ? 15 : 18, 
-                  fontWeight: FontWeight.w600
-                ),
+                title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],
@@ -225,10 +305,108 @@ class _CustomVideoControlsState extends State<CustomVideoControls> with SingleTi
       ),
     );
   }
+}
 
-  Widget _buildBottomBar() {
+class _CenterControls extends StatelessWidget {
+  const _CenterControls({
+    required this.metrics,
+    required this.isPlaying,
+    required this.onRewind,
+    required this.onForward,
+    required this.onPlayPause,
+  });
+
+  final _ControlMetrics metrics;
+  final bool isPlaying;
+  final VoidCallback onRewind;
+  final VoidCallback onForward;
+  final VoidCallback onPlayPause;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        IconButton(
+          onPressed: onRewind,
+          visualDensity: VisualDensity.compact,
+          icon: Icon(
+            Icons.replay_10_rounded,
+            color: Colors.white,
+            size: metrics.seekIcon,
+          ),
+        ),
+        SizedBox(width: metrics.playButton * 0.35),
+        SizedBox(
+          width: metrics.playButton,
+          height: metrics.playButton,
+          child: Material(
+            color: Colors.white.withValues(alpha: 0.92),
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onPlayPause,
+              child: Icon(
+                isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                size: metrics.playIcon,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+        ),
+        SizedBox(width: metrics.playButton * 0.35),
+        IconButton(
+          onPressed: onForward,
+          visualDensity: VisualDensity.compact,
+          icon: Icon(
+            Icons.forward_10_rounded,
+            color: Colors.white,
+            size: metrics.seekIcon,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BottomBar extends StatelessWidget {
+  const _BottomBar({
+    required this.metrics,
+    required this.position,
+    required this.duration,
+    required this.dragValue,
+    required this.isFullscreen,
+    required this.format,
+    required this.onDragStart,
+    required this.onDragUpdate,
+    required this.onDragEnd,
+    required this.onSettingsTap,
+    required this.onToggleFullscreen,
+  });
+
+  final _ControlMetrics metrics;
+  final Duration position;
+  final Duration duration;
+  final double? dragValue;
+  final bool isFullscreen;
+  final String Function(Duration) format;
+  final ValueChanged<double> onDragStart;
+  final ValueChanged<double> onDragUpdate;
+  final ValueChanged<double> onDragEnd;
+  final VoidCallback onSettingsTap;
+  final VoidCallback onToggleFullscreen;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxMs = duration.inMilliseconds > 0
+        ? duration.inMilliseconds.toDouble()
+        : 1.0;
+    final value =
+        (dragValue ?? position.inMilliseconds.toDouble()).clamp(0.0, maxMs);
+    final labelStyle = TextStyle(color: Colors.white, fontSize: metrics.fontSize);
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 2),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.bottomCenter,
@@ -238,60 +416,57 @@ class _CustomVideoControlsState extends State<CustomVideoControls> with SingleTi
       ),
       child: SafeArea(
         top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        // Прогресс, время и кнопки собраны в одну строку: два ряда,
+        // как было раньше, не вмещались во врезку без обрезки.
+        child: Row(
           children: [
-            // Progress Bar
-            Row(
-              children: [
-                Text(_formatDuration(_position), style: TextStyle(color: Colors.white, fontSize: widget.isFullscreen ? 11 : 13)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      trackHeight: widget.isFullscreen ? 3 : 4,
-                      thumbShape: RoundSliderThumbShape(enabledThumbRadius: widget.isFullscreen ? 4 : 6),
-                      overlayShape: RoundSliderOverlayShape(overlayRadius: widget.isFullscreen ? 10 : 14),
-                      activeTrackColor: Theme.of(context).colorScheme.primary,
-                      inactiveTrackColor: Colors.white30,
-                      thumbColor: Theme.of(context).colorScheme.primary,
-                    ),
-                    child: Slider(
-                      value: _position.inMilliseconds.toDouble(),
-                      max: _duration.inMilliseconds.toDouble() > 0 ? _duration.inMilliseconds.toDouble() : 1,
-                      onChanged: (val) {
-                        _onInteraction();
-                        widget.player.seek(Duration(milliseconds: val.toInt()));
-                      },
-                    ),
+            Text(format(position), style: labelStyle),
+            Expanded(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: metrics.trackHeight,
+                  thumbShape: RoundSliderThumbShape(
+                    enabledThumbRadius: metrics.thumbRadius,
                   ),
+                  overlayShape: RoundSliderOverlayShape(
+                    overlayRadius: metrics.thumbRadius * 2,
+                  ),
+                  activeTrackColor: Theme.of(context).colorScheme.primary,
+                  inactiveTrackColor: Colors.white24,
+                  thumbColor: Theme.of(context).colorScheme.primary,
                 ),
-                const SizedBox(width: 8),
-                Text(_formatDuration(_duration), style: TextStyle(color: Colors.white, fontSize: widget.isFullscreen ? 11 : 13)),
-              ],
+                child: Slider(
+                  value: value,
+                  max: maxMs,
+                  onChangeStart: onDragStart,
+                  onChanged: onDragUpdate,
+                  onChangeEnd: onDragEnd,
+                ),
+              ),
             ),
-            const SizedBox(height: 4),
-            // Controls
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                IconButton(
-                  iconSize: widget.isFullscreen ? 20 : 24,
-                  icon: const Icon(Icons.settings_rounded, color: Colors.white),
-                  onPressed: () {
-                    _hideTimer?.cancel();
-                    widget.onSettingsTap();
-                  },
-                ),
-                IconButton(
-                  iconSize: widget.isFullscreen ? 20 : 24,
-                  icon: Icon(
-                    widget.isFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
-                    color: Colors.white,
-                  ),
-                  onPressed: widget.onToggleFullscreen,
-                ),
-              ],
+            Text(format(duration), style: labelStyle),
+            const SizedBox(width: 4),
+            IconButton(
+              iconSize: metrics.barIcon,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              icon: const Icon(Icons.settings_rounded, color: Colors.white),
+              onPressed: onSettingsTap,
+            ),
+            const SizedBox(width: 12),
+            IconButton(
+              iconSize: metrics.barIcon,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              icon: Icon(
+                isFullscreen
+                    ? Icons.fullscreen_exit_rounded
+                    : Icons.fullscreen_rounded,
+                color: Colors.white,
+              ),
+              onPressed: onToggleFullscreen,
             ),
           ],
         ),
