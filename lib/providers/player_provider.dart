@@ -47,7 +47,7 @@ class PlayerProvider extends ChangeNotifier {
   String? get selectedQuality => _selectedQuality;
 
   Future<void> loadVideo(VideoItem video) async {
-    prepareVideo(video);
+    prepareVideo(video, resetQualities: false);
 
 
     // Для фильмов (vidapi) загружаем субтитры из OpenSubtitles
@@ -412,7 +412,7 @@ class PlayerProvider extends ChangeNotifier {
   /// Вызывается сразу при открытии PlayerScreen, чтобы интерфейс не показывал
   /// субтитры, позицию и последнюю реплику предыдущего видео, пока загружается
   /// новый видеопоток.
-  void prepareVideo(VideoItem video, {bool notify = true}) {
+  void prepareVideo(VideoItem video, {bool notify = true, bool resetQualities = true}) {
     _currentVideo = video;
 
     _englishSubs = [];
@@ -430,8 +430,10 @@ class PlayerProvider extends ChangeNotifier {
     _isAutoTranslating = false;
     _subtitleError = null;
 
-    _availableQualities = [];
-    _selectedQuality = null;
+    if (resetQualities) {
+      _availableQualities = [];
+      _selectedQuality = null;
+    }
 
     if (notify) {
       notifyListeners();
