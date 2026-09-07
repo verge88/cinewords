@@ -1,14 +1,17 @@
 import 'dart:async';
+
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
-import '../../providers/video_provider.dart';
+
 import '../../models/video_item.dart';
+import '../../providers/video_provider.dart';
 import '../../services/supabase_service.dart';
 import '../../services/youtube_data_service.dart';
-import '../../widgets/video_card.dart';
 import '../player/player_screen.dart';
 
+/// Лента в стиле YouTube: полноширинное превью 16:9, под ним аватар канала,
+/// заголовок в две строки и строка метаданных.
 class CatalogScreen extends StatefulWidget {
   const CatalogScreen({super.key});
 
@@ -17,309 +20,765 @@ class CatalogScreen extends StatefulWidget {
 }
 
 class _CatalogScreenState extends State<CatalogScreen> {
-  final _searchController = TextEditingController();
-  String _selectedCategory = 'all';
-  String _selectedDifficulty = 'all';
-  String _lastQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  final ScrollController _scrollController = ScrollController();
 
-  // Debounce-таймер для поискового ввода — не дёргаем YouTube API
-  // на каждое нажатие клавиши.
-  Timer? _searchDebounce;
-  static const _searchDebounceDuration = Duration(milliseconds: 400);
+  Timer? _debounce;
+  static const Duration _debounceDelay = Duration(milliseconds: 400);
+
+  bool _isSearchOpen = false;
+  bool _isBootstrapping = true;
+  String _query = '';
+  String _category = 'all';
+  String _difficulty = 'all';
+
+  static const List<(String, String, IconData)> _categories = [
+    ('all', 'Все', Icons.apps_rounded),
+    ('movies', 'Фильмы', Icons.movie_rounded),
+    ('series', 'Сериалы', Icons.tv_rounded),
+    ('ted_talks', 'TED', Icons.mic_rounded),
+    ('news', 'Новости', Icons.newspaper_rounded),
+    ('interviews', 'Интервью', Icons.people_rounded),
+    ('music', 'Музыка', Icons.music_note_rounded),
+    ('cartoons', 'Мультфильмы', Icons.animation_rounded),
+  ];
+
+  static const List<(String, String)> _difficulties = [
+    ('all', 'Любой уровень'),
+    ('beginner', 'A1 · Начальный'),
+    ('elementary', 'A2 · Базовый'),
+    ('intermediate', 'B1 · Средний'),
+    ('upper_intermediate', 'B2 · Выше среднего'),
+    ('advanced', 'C1 · Продвинутый'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_onScroll);
+    // Рекомендации грузим сразу при открытии таба, а не по действию
+    // пользователя: экран не должен встречать пустотой.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
+  }
 
   @override
   void dispose() {
-    _searchDebounce?.cancel();
+    _debounce?.cancel();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _searchController.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
-  void _onSearchChanged(String value) {
-    _searchDebounce?.cancel();
-    final trimmed = value.trim();
-    if (trimmed.isEmpty) {
-      // Если пользователь стёр запрос — мгновенно сбрасываем, без задержки.
-      if (_lastQuery.isNotEmpty) {
-        setState(() => _lastQuery = '');
-      }
+  Future<void> _bootstrap() async {
+    if (!mounted) return;
+    final videos = context.read<VideoProvider>();
+
+    await Future.wait<void>([
+      if (videos.featuredVideos.isEmpty) videos.loadFeatured(),
+      if (videos.trendingVideos.isEmpty) videos.loadTrending(),
+    ]);
+
+    if (mounted) setState(() => _isBootstrapping = false);
+  }
+
+  Future<void> _refresh() async {
+    final videos = context.read<VideoProvider>();
+    if (_query.isNotEmpty) {
+      await videos.search(_query);
       return;
     }
-    _searchDebounce = Timer(_searchDebounceDuration, () {
-      if (!mounted) return;
-      if (trimmed == _lastQuery) return; // не повторяем одинаковые запросы
-      _lastQuery = trimmed;
+    if (_category != 'all') {
+      await videos.loadCategory(_category);
+      return;
+    }
+    await Future.wait<void>([videos.loadFeatured(), videos.loadTrending()]);
+  }
+
+  /// Бесконечная прокрутка работает только для результатов поиска —
+  /// пагинацию отдаёт YouTube API через nextPageToken.
+  void _onScroll() {
+    if (_query.isEmpty) return;
+    final videos = context.read<VideoProvider>();
+    if (videos.isLoading || !videos.hasMore) return;
+
+    final position = _scrollController.position;
+    if (position.pixels >= position.maxScrollExtent - 600) {
+      videos.loadMoreSearchResults(_query);
+    }
+  }
+
+  void _toggleSearch() {
+    setState(() => _isSearchOpen = !_isSearchOpen);
+    if (_isSearchOpen) {
+      _searchFocus.requestFocus();
+      return;
+    }
+    _debounce?.cancel();
+    _searchFocus.unfocus();
+    _searchController.clear();
+    setState(() => _query = '');
+  }
+
+  void _onSearchChanged(String value) {
+    _debounce?.cancel();
+    final trimmed = value.trim();
+
+    if (trimmed.isEmpty) {
+      if (_query.isNotEmpty) setState(() => _query = '');
+      return;
+    }
+
+    _debounce = Timer(_debounceDelay, () {
+      if (!mounted || trimmed == _query) return;
+      setState(() => _query = trimmed);
       context.read<VideoProvider>().search(trimmed);
-      setState(() {});
     });
   }
 
   void _onSearchSubmitted(String value) {
-    // Submit немедленно отменяет debounce и запускает поиск.
-    _searchDebounce?.cancel();
+    _debounce?.cancel();
     final trimmed = value.trim();
-    if (trimmed.isEmpty) return;
-    if (trimmed == _lastQuery) return;
-    _lastQuery = trimmed;
+    if (trimmed.isEmpty || trimmed == _query) return;
+    setState(() => _query = trimmed);
     context.read<VideoProvider>().search(trimmed);
-    setState(() {});
   }
 
-  static const _categories = [
-    ('all', 'All', Icons.apps_rounded),
-    ('movies', 'Movies', Icons.movie_rounded),
-    ('series', 'Series', Icons.tv_rounded),
-    ('ted_talks', 'TED Talks', Icons.mic_rounded),
-    ('news', 'News', Icons.newspaper_rounded),
-    ('interviews', 'Interviews', Icons.people_rounded),
-    ('music', 'Music', Icons.music_note_rounded),
-    ('cartoons', 'Cartoons', Icons.animation_rounded),
-  ];
+  void _searchByChannel(String channelId, String label) {
+    _debounce?.cancel();
+    _searchController.text = label;
+    setState(() {
+      _query = label;
+      _isSearchOpen = false;
+    });
+    _searchFocus.unfocus();
+    context.read<VideoProvider>().loadFromChannel(channelId);
+  }
 
-  static const _difficulties = [
-    ('all', 'All Levels'),
-    ('beginner', 'A1 Beginner'),
-    ('elementary', 'A2 Elementary'),
-    ('intermediate', 'B1 Intermediate'),
-    ('upper_intermediate', 'B2 Upper'),
-    ('advanced', 'C1 Advanced'),
-  ];
+  void _selectCategory(String value) {
+    setState(() => _category = value);
+    if (value != 'all') context.read<VideoProvider>().loadCategory(value);
+  }
+
+  Future<void> _showDifficultySheet() async {
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (value, label) in _difficulties)
+              RadioListTile<String>(
+                value: value,
+                groupValue: _difficulty,
+                title: Text(label),
+                onChanged: (v) => Navigator.of(ctx).pop(v),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (selected != null && mounted) {
+      setState(() => _difficulty = selected);
+    }
+  }
+
+  /// Источник ленты: поиск → категория → рекомендации.
+  /// Рекомендации склеены из featured и trending с дедупликацией,
+  /// чтобы лента не была короткой на свежем аккаунте.
+  List<VideoItem> _feed(VideoProvider videos) {
+    List<VideoItem> items;
+
+    if (_query.isNotEmpty) {
+      items = videos.searchResults;
+    } else if (_category != 'all') {
+      items = videos.getByCategory(_category);
+    } else {
+      final seen = <String>{};
+      items = [
+        for (final video in [...videos.featuredVideos, ...videos.trendingVideos])
+          if (seen.add(video.youtubeId)) video,
+      ];
+    }
+
+    if (_difficulty == 'all') return items;
+    return items.where((v) => v.difficulty == _difficulty).toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final videos = context.watch<VideoProvider>();
+    final feed = _feed(videos);
+    final isBusy = videos.isLoading || _isBootstrapping;
+
+    return Scaffold(
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+      floatingActionButton: FloatingActionButton(
+        heroTag: 'catalog_search_fab',
+        onPressed: _toggleSearch,
+        tooltip: _isSearchOpen ? 'Закрыть поиск' : 'Поиск видео',
+        child: Icon(_isSearchOpen ? Icons.close_rounded : Icons.search_rounded),
+      ),
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: CustomScrollView(
+          controller: _scrollController,
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          slivers: [
+            // Поисковая строка остаётся наверху экрана — открывается кнопкой
+            // из правого нижнего угла.
+            SliverAppBar(
+              pinned: true,
+              elevation: 0,
+              scrolledUnderElevation: 2,
+              titleSpacing: _isSearchOpen ? 12 : 20,
+              automaticallyImplyLeading: false,
+              title: _isSearchOpen
+                  ? _SearchField(
+                      controller: _searchController,
+                      focusNode: _searchFocus,
+                      onChanged: _onSearchChanged,
+                      onSubmitted: _onSearchSubmitted,
+                      onClear: () {
+                        _debounce?.cancel();
+                        _searchController.clear();
+                        setState(() => _query = '');
+                        _searchFocus.requestFocus();
+                      },
+                    )
+                  : Text(
+                      'Видео',
+                      style: theme.textTheme.titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+              bottom: PreferredSize(
+                preferredSize: const Size.fromHeight(52),
+                child: _ChipsBar(
+                  categories: _categories,
+                  selectedCategory: _category,
+                  difficultyLabel: _difficultyLabel,
+                  isDifficultyActive: _difficulty != 'all',
+                  onCategorySelected: _selectCategory,
+                  onDifficultyTap: _showDifficultySheet,
+                ),
+              ),
+            ),
+
+            // Подсказки с обучающими каналами, пока запрос не введён.
+            if (_isSearchOpen && _searchController.text.trim().isEmpty)
+              SliverList.list(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                    child: Text(
+                      'Каналы для изучения',
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  for (final entry
+                      in YouTubeDataService.learningChannels.entries)
+                    ListTile(
+                      leading: const Icon(Icons.play_circle_outline_rounded),
+                      title: Text(entry.value),
+                      trailing: const Icon(Icons.north_east_rounded, size: 18),
+                      onTap: () => _searchByChannel(entry.key, entry.value),
+                    ),
+                ],
+              )
+            else if (feed.isEmpty && isBusy)
+              const _FeedSkeleton()
+            else if (feed.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: _EmptyFeed(
+                  isSearch: _query.isNotEmpty,
+                  onReset: () {
+                    _debounce?.cancel();
+                    _searchController.clear();
+                    setState(() {
+                      _query = '';
+                      _category = 'all';
+                      _difficulty = 'all';
+                      _isSearchOpen = false;
+                    });
+                    _refresh();
+                  },
+                ),
+              )
+            else
+              SliverList.separated(
+                itemCount: feed.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 4),
+                itemBuilder: (context, index) {
+                  final video = feed[index];
+                  return _VideoTile(
+                    video: video,
+                    isFavorite: videos.isFavorite(video.youtubeId),
+                    onTap: () => _openVideo(video),
+                    onToggleFavorite: () => videos.toggleFavorite(video),
+                  );
+                },
+              ),
+
+            // Индикатор догрузки следующей страницы поиска.
+            if (feed.isNotEmpty && videos.isLoading)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+              ),
+
+            // Место под FAB и таббар, чтобы кнопка не накрывала последнюю карточку.
+            const SliverToBoxAdapter(child: SizedBox(height: 96)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String get _difficultyLabel {
+    if (_difficulty == 'all') return 'Уровень';
+    return _difficulties.firstWhere((d) => d.$1 == _difficulty).$2.split(' · ').first;
+  }
+
+  /// Переход открывается синхронно, до любых сетевых операций: раньше здесь
+  /// был await записи в Supabase, из-за которого между тапом и появлением
+  /// плеера проходила пауза. Сохранение уходит в фон.
+  void _openVideo(VideoItem video) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => PlayerScreen(video: video)),
+    );
+
+    if (video.id.isEmpty) {
+      unawaited(
+        SupabaseService.addVideo(video).catchError((Object error) {
+          debugPrint('[Catalog] Не удалось сохранить видео: $error');
+          return video;
+        }),
+      );
+    }
+  }
+}
+
+// ── Поисковая строка ────────────────────────────────────────────────────
+
+class _SearchField extends StatelessWidget {
+  const _SearchField({
+    required this.controller,
+    required this.focusNode,
+    required this.onChanged,
+    required this.onSubmitted,
+    required this.onClear,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final ValueChanged<String> onChanged;
+  final ValueChanged<String> onSubmitted;
+  final VoidCallback onClear;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
-    final videoProvider = context.watch<VideoProvider>();
 
-    return Scaffold(
-      body: CustomScrollView(
-        slivers: [
-          SliverAppBar.medium(
-            title: Text('Catalog', style: tt.headlineMedium),
+    return SizedBox(
+      height: 44,
+      child: TextField(
+        controller: controller,
+        focusNode: focusNode,
+        onChanged: onChanged,
+        onSubmitted: onSubmitted,
+        textInputAction: TextInputAction.search,
+        autocorrect: false,
+        decoration: InputDecoration(
+          isDense: true,
+          filled: true,
+          fillColor: cs.surfaceContainerHighest.withValues(alpha: 0.5),
+          hintText: 'Поиск видео на YouTube',
+          prefixIcon: const Icon(Icons.search_rounded, size: 20),
+          suffixIcon: ValueListenableBuilder<TextEditingValue>(
+            valueListenable: controller,
+            builder: (context, value, _) => value.text.isEmpty
+                ? const SizedBox.shrink()
+                : IconButton(
+                    icon: const Icon(Icons.clear_rounded, size: 20),
+                    onPressed: onClear,
+                  ),
           ),
+          contentPadding: const EdgeInsets.symmetric(vertical: 10),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(24),
+            borderSide: BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+}
 
-          // Search bar
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-              child: SearchBar(
-                controller: _searchController,
-                hintText: 'Search YouTube videos...',
-                leading: Icon(Icons.search, color: cs.onSurfaceVariant),
-                trailing: [
-                  if (_searchController.text.isNotEmpty)
-                    IconButton(
-                      icon: const Icon(Icons.clear),
-                      onPressed: () {
-                        _searchDebounce?.cancel();
-                        _searchController.clear();
-                        _lastQuery = '';
-                        setState(() {});
-                      },
+// ── Строка чипов ────────────────────────────────────────────────────────
+
+class _ChipsBar extends StatelessWidget {
+  const _ChipsBar({
+    required this.categories,
+    required this.selectedCategory,
+    required this.difficultyLabel,
+    required this.isDifficultyActive,
+    required this.onCategorySelected,
+    required this.onDifficultyTap,
+  });
+
+  final List<(String, String, IconData)> categories;
+  final String selectedCategory;
+  final String difficultyLabel;
+  final bool isDifficultyActive;
+  final ValueChanged<String> onCategorySelected;
+  final VoidCallback onDifficultyTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 52,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        itemCount: categories.length + 1,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          if (index == 0) {
+            return FilterChip(
+              selected: isDifficultyActive,
+              showCheckmark: false,
+              avatar: const Icon(Icons.tune_rounded, size: 18),
+              label: Text(difficultyLabel),
+              onSelected: (_) => onDifficultyTap(),
+            );
+          }
+
+          final (value, label, icon) = categories[index - 1];
+          final selected = selectedCategory == value;
+          return FilterChip(
+            selected: selected,
+            showCheckmark: false,
+            avatar: Icon(icon, size: 18),
+            label: Text(label),
+            onSelected: (_) => onCategorySelected(value),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ── Карточка видео в стиле YouTube ──────────────────────────────────────
+
+class _VideoTile extends StatelessWidget {
+  const _VideoTile({
+    required this.video,
+    required this.isFavorite,
+    required this.onTap,
+    required this.onToggleFavorite,
+  });
+
+  final VideoItem video;
+  final bool isFavorite;
+  final VoidCallback onTap;
+  final VoidCallback onToggleFavorite;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return InkWell(
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Превью во всю ширину — как в мобильном YouTube.
+          Stack(
+            children: [
+              AspectRatio(
+                aspectRatio: 16 / 9,
+                child: video.thumbnailUrl == null
+                    ? ColoredBox(color: cs.surfaceContainerHighest)
+                    : CachedNetworkImage(
+                        imageUrl: video.thumbnailUrl!,
+                        fit: BoxFit.cover,
+                        fadeInDuration: const Duration(milliseconds: 150),
+                        placeholder: (_, __) =>
+                            ColoredBox(color: cs.surfaceContainerHighest),
+                        errorWidget: (_, __, ___) => ColoredBox(
+                          color: cs.surfaceContainerHighest,
+                          child: Icon(
+                            Icons.broken_image_outlined,
+                            color: cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+              ),
+              Positioned(
+                right: 8,
+                bottom: 8,
+                child: Row(
+                  children: [
+                    _Badge(
+                      text: video.difficultyLabel,
+                      background: Color(video.difficultyColorValue),
+                      foreground: Colors.black.withValues(alpha: 0.8),
                     ),
-                ],
-                onChanged: _onSearchChanged,
-                onSubmitted: _onSearchSubmitted,
-                shape: WidgetStatePropertyAll(
-                  RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20)),
-                ),
-                elevation: const WidgetStatePropertyAll(0),
-                backgroundColor: WidgetStatePropertyAll(
-                  cs.surfaceContainerHighest.withOpacity(0.4),
+                    if (video.formattedDuration.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      _Badge(
+                        text: video.formattedDuration,
+                        background: Colors.black.withValues(alpha: 0.78),
+                        foreground: Colors.white,
+                      ),
+                    ],
+                  ],
                 ),
               ),
-            ).animate().fadeIn().slideY(begin: -0.1),
+            ],
           ),
 
-          // Category chips
-          SliverToBoxAdapter(
-            child: SizedBox(
-              height: 52,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                itemCount: _categories.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
-                itemBuilder: (context, index) {
-                  final (value, label, icon) = _categories[index];
-                  final selected = _selectedCategory == value;
-                  return FilterChip(
-                    selected: selected,
-                    label: Text(label),
-                    avatar: Icon(icon, size: 18),
-                    onSelected: (_) {
-                      setState(() => _selectedCategory = value);
-                      if (value != 'all') videoProvider.loadCategory(value);
-                    },
-                  );
-                },
-              ),
-            ).animate(delay: 100.ms).fadeIn(),
-          ),
-
-          // Difficulty filter
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-              child: SizedBox(
-                height: 40,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _difficulties.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 6),
-                  itemBuilder: (context, index) {
-                    final (value, label) = _difficulties[index];
-                    final selected = _selectedDifficulty == value;
-                    return ChoiceChip(
-                      selected: selected,
-                      label: Text(label, style: const TextStyle(fontSize: 12)),
-                      onSelected: (_) {
-                        setState(() => _selectedDifficulty = value);
-                      },
-                      visualDensity: VisualDensity.compact,
-                    );
-                  },
+          // Мета-блок: аватар канала, заголовок в две строки, подпись.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 4, 16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _ChannelAvatar(name: video.channelName ?? ''),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        video.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          height: 1.25,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _metaLine(video),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: cs.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+                IconButton(
+                  icon: Icon(
+                    isFavorite
+                        ? Icons.bookmark_rounded
+                        : Icons.bookmark_border_rounded,
+                    size: 20,
+                  ),
+                  tooltip: isFavorite ? 'Убрать из избранного' : 'В избранное',
+                  onPressed: onToggleFavorite,
+                ),
+              ],
             ),
           ),
-
-          // Learning channels section (when no search)
-          if (_lastQuery.isEmpty && _selectedCategory == 'all') ...[
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                child: Text('Learning Channels', style: tt.titleMedium),
-              ),
-            ),
-            SliverToBoxAdapter(
-              child: SizedBox(
-                height: 48,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  children: YouTubeDataService.learningChannels.entries
-                      .map((entry) => Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ActionChip(
-                      label: Text(entry.value),
-                      avatar: const Icon(Icons.play_circle_outline,
-                          size: 18),
-                      onPressed: () {
-                        videoProvider.loadFromChannel(entry.key);
-                        _lastQuery = entry.value;
-                        _searchController.text = entry.value;
-                        setState(() {});
-                      },
-                    ),
-                  ))
-                      .toList(),
-                ),
-              ),
-            ),
-          ],
-
-          const SliverToBoxAdapter(child: SizedBox(height: 8)),
-
-          // Video list
-          _buildVideoList(videoProvider),
-
-          // Load more button
-          if (videoProvider.hasMore && _lastQuery.isNotEmpty)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: OutlinedButton(
-                  onPressed: videoProvider.isLoading
-                      ? null
-                      : () => videoProvider.loadMoreSearchResults(_lastQuery),
-                  child: videoProvider.isLoading
-                      ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Load More'),
-                ),
-              ),
-            ),
         ],
       ),
     );
   }
 
-  Widget _buildVideoList(VideoProvider provider) {
-    List<VideoItem> videos;
+  String _metaLine(VideoItem video) {
+    final parts = <String>[
+      if ((video.channelName ?? '').isNotEmpty) video.channelName!,
+      if (video.viewCount > 0) '${_compactViews(video.viewCount)} просмотров',
+      if (video.totalUniqueWords > 0) '${video.totalUniqueWords} слов',
+    ];
+    return parts.join(' · ');
+  }
 
-    if (_lastQuery.isNotEmpty) {
-      videos = provider.searchResults;
-    } else if (_selectedCategory != 'all') {
-      videos = provider.getByCategory(_selectedCategory);
-    } else {
-      videos = provider.featuredVideos;
+  String _compactViews(int count) {
+    if (count >= 1000000) {
+      return '${(count / 1000000).toStringAsFixed(1).replaceAll('.0', '')} млн';
     }
-
-    if (_selectedDifficulty != 'all') {
-      videos =
-          videos.where((v) => v.difficulty == _selectedDifficulty).toList();
+    if (count >= 1000) {
+      return '${(count / 1000).toStringAsFixed(1).replaceAll('.0', '')} тыс.';
     }
+    return '$count';
+  }
+}
 
-    if (provider.isLoading && videos.isEmpty) {
-      return const SliverFillRemaining(
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
+class _Badge extends StatelessWidget {
+  const _Badge({
+    required this.text,
+    required this.background,
+    required this.foreground,
+  });
 
-    if (videos.isEmpty) {
-      return SliverFillRemaining(
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.search_off_rounded,
-                  size: 64,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant),
-              const SizedBox(height: 16),
-              Text('No videos found',
-                  style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 8),
-              Text('Try a different search or category',
-                  style: Theme.of(context).textTheme.bodyMedium),
-            ],
-          ),
-        ),
-      );
-    }
+  final String text;
+  final Color background;
+  final Color foreground;
 
-    return SliverPadding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      sliver: SliverList.separated(
-        itemCount: videos.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 12),
-        itemBuilder: (context, index) {
-          final video = videos[index];
-          return VideoCard(
-            video: video,
-            onTap: () async {
-              // Save to Supabase before navigating
-              VideoItem savedVideo = video;
-              if (video.id.isEmpty) {
-                try {
-                  savedVideo = await SupabaseService.addVideo(video);
-                } catch (_) {
-                  // Play anyway even if save fails
-                }
-              }
-              if (context.mounted) {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => PlayerScreen(video: savedVideo),
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: foreground,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+}
+
+class _ChannelAvatar extends StatelessWidget {
+  const _ChannelAvatar({required this.name});
+
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final initial = name.trim().isEmpty ? '?' : name.trim()[0].toUpperCase();
+
+    return Container(
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        initial,
+        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+}
+
+// ── Заглушки ────────────────────────────────────────────────────────────
+
+class _FeedSkeleton extends StatelessWidget {
+  const _FeedSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final placeholder = cs.surfaceContainerHighest.withValues(alpha: 0.45);
+
+    return SliverList.builder(
+      itemCount: 4,
+      itemBuilder: (context, index) => Padding(
+        padding: const EdgeInsets.only(bottom: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: ColoredBox(color: placeholder),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+              child: Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: placeholder,
+                      shape: BoxShape.circle,
+                    ),
                   ),
-                );
-              }
-            },
-          ).animate(delay: (index * 60).ms).fadeIn().slideY(begin: 0.05);
-        },
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(height: 14, color: placeholder),
+                        const SizedBox(height: 8),
+                        FractionallySizedBox(
+                          widthFactor: 0.55,
+                          child: Container(height: 12, color: placeholder),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyFeed extends StatelessWidget {
+  const _EmptyFeed({required this.isSearch, required this.onReset});
+
+  final bool isSearch;
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              isSearch ? Icons.search_off_rounded : Icons.video_library_outlined,
+              size: 56,
+              color: cs.onSurfaceVariant,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              isSearch ? 'Ничего не нашлось' : 'Пока нет видео',
+              style: theme.textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              isSearch
+                  ? 'Попробуйте изменить запрос, категорию или уровень'
+                  : 'Потяните вниз, чтобы обновить подборку',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
+            const SizedBox(height: 20),
+            FilledButton.tonal(
+              onPressed: onReset,
+              child: const Text('Сбросить фильтры'),
+            ),
+          ],
+        ),
       ),
     );
   }
