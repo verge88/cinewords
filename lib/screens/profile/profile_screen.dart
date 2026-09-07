@@ -3,10 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/vocabulary_provider.dart';
 import '../../services/supabase_service.dart';
 import '../../models/user_progress.dart';
 import '../../widgets/progress_ring.dart';
-import '../../config/supabase_config.dart'; 
+import '../../widgets/stats_bento.dart';
 import '../../providers/theme_provider.dart';
 import '../catalog/favorites_screen.dart';
 
@@ -25,6 +26,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void initState() {
     super.initState();
     _loadProgress();
+    // Словарь нужен для плитки «В процессе» в bento-статистике.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<VocabularyProvider>().loadAll();
+    });
   }
 
   Future<void> _loadProgress() async {
@@ -121,7 +126,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
                 const SizedBox(height: 24),
 
-                // ─── Statistics Grid ───
+                // ─── Statistics Grid (bento, как на главной) ───
                 Text('Statistics', style: tt.titleLarge)
                     .animate(delay: 100.ms)
                     .fadeIn(),
@@ -130,44 +135,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 if (_isLoading)
                   const Center(child: CircularProgressIndicator())
                 else
-                  GridView.count(
-                    crossAxisCount: 2,
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    mainAxisSpacing: 12,
-                    crossAxisSpacing: 12,
-                    childAspectRatio: 1.15,
-                    children: [
-                      _StatCard(
-                        icon: Icons.local_fire_department_rounded,
-                        value: '${_progress.streakDays}',
-                        label: 'Day Streak',
-                        color: Colors.orange,
-                        cs: cs,
-                      ),
-                      _StatCard(
-                        icon: Icons.book_rounded,
-                        value: '${_progress.totalWordsLearned}',
-                        label: 'Words Learned',
-                        color: cs.primary,
-                        cs: cs,
-                      ),
-                      _StatCard(
-                        icon: Icons.play_circle_rounded,
-                        value: '${_progress.totalWatchMinutes}',
-                        label: 'Minutes Watched',
-                        color: cs.secondary,
-                        cs: cs,
-                      ),
-                      _StatCard(
-                        icon: Icons.replay_rounded,
-                        value: '${_progress.wordsToReview}',
-                        label: 'To Review',
-                        color: cs.tertiary,
-                        cs: cs,
-                      ),
-                    ],
-                  ).animate(delay: 200.ms).fadeIn().slideY(begin: 0.1),
+                  _ProfileStatsBento(progress: _progress)
+                      .animate(delay: 200.ms)
+                      .fadeIn()
+                      .slideY(begin: 0.1),
 
                 const SizedBox(height: 24),
 
@@ -385,49 +356,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-class _StatCard extends StatelessWidget {
-  final IconData icon;
-  final String value;
-  final String label;
-  final Color color;
-  final ColorScheme cs;
-
-  const _StatCard({
-    required this.icon,
-    required this.value,
-    required this.label,
-    required this.color,
-    required this.cs,
-  });
+/// Bento-статистика профиля — подписана только на счётчики словаря.
+class _ProfileStatsBento extends StatelessWidget {
+  final UserProgress progress;
+  const _ProfileStatsBento({required this.progress});
 
   @override
   Widget build(BuildContext context) {
-    final tt = Theme.of(context).textTheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: color, size: 28),
-            const SizedBox(height: 8),
-            Text(
-              value,
-              style: tt.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w800,
-                color: color,
-              ),
-            ),
-            Text(
-              label,
-              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-            ),
-          ],
-        ),
+    final counts = context.select<VocabularyProvider, _ProfileVocabCounts>(
+      (v) => _ProfileVocabCounts(
+        newCount: v.newCount,
+        learning: v.learningCount,
       ),
     );
+    return StatsBento(
+      progress: progress,
+      newCount: counts.newCount,
+      learningCount: counts.learning,
+    );
   }
+}
+
+class _ProfileVocabCounts {
+  final int newCount;
+  final int learning;
+  const _ProfileVocabCounts({required this.newCount, required this.learning});
+
+  @override
+  bool operator ==(Object other) =>
+      other is _ProfileVocabCounts &&
+      other.newCount == newCount &&
+      other.learning == learning;
+
+  @override
+  int get hashCode => Object.hash(newCount, learning);
 }
 
 class _SettingsTile extends StatelessWidget {

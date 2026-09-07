@@ -1,22 +1,63 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
+
+import '../../models/user_progress.dart';
+import '../../models/video_item.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/video_provider.dart';
 import '../../providers/vocabulary_provider.dart';
 import '../../services/supabase_service.dart';
-import '../../models/user_progress.dart';
-import '../../widgets/video_card.dart';
 import '../../widgets/progress_ring.dart';
+import '../../widgets/video_card.dart';
 import '../catalog/catalog_screen.dart';
-import '../catalog/movie_catalog_screen.dart';
 import '../catalog/favorites_screen.dart';
-import '../player/player_screen.dart';
-import '../vocabulary/vocabulary_screen.dart';
-import '../exercises/exercises_hub_screen.dart';
+import '../catalog/movie_catalog_screen.dart';
 import '../dictionary/full_dictionary_screen.dart';
+import '../exercises/exercises_hub_screen.dart';
+import '../player/player_screen.dart';
 import '../profile/profile_screen.dart';
-import '../../models/video_item.dart';
+import '../vocabulary/vocabulary_screen.dart';
+
+/// Единая метрика отступов экрана.
+const double _gutter = 20;
+const double _railHeight = 262;
+const double _railItemWidth = 272;
+
+/// Фирменные акценты. Не зависят от dynamic color, поэтому одинаковы
+/// на всех устройствах и в обеих темах.
+abstract final class _Accent {
+  static const violet = Color(0xFF7C6CFF);
+  static const teal = Color(0xFF00BFA5);
+  static const amber = Color(0xFFFFB74D);
+  static const coral = Color(0xFFFF6B4A);
+}
+
+enum HomeTab { home, videos, movies, words, profile }
+
+/// Доступ к навигации по табам из любого места главного экрана —
+/// чтобы не пушить второй экземпляр экрана, который уже есть в таббаре.
+class HomeScope extends InheritedWidget {
+  const HomeScope({
+    super.key,
+    required this.openTab,
+    required this.reload,
+    required super.child,
+  });
+
+  final ValueChanged<HomeTab> openTab;
+  final Future<void> Function() reload;
+
+  static HomeScope of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<HomeScope>();
+    assert(scope != null, 'HomeScope не найден выше в дереве');
+    return scope!;
+  }
+
+  @override
+  bool updateShouldNotify(HomeScope oldWidget) => false;
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,313 +67,94 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _currentIndex = 0;
-  UserProgress _progress = const UserProgress();
+  /// Прогресс живёт в notifier, а не в state: так его обновление
+  /// перестраивает только шапку, а не весь таб со списками.
+  final ValueNotifier<UserProgress?> _progress = ValueNotifier(null);
 
-  // Отслеживаем, какие табы уже были открыты, чтобы не строить экраны
-  // и не дёргать их API раньше времени. Изначально открыт только Home.
-  final Set<int> _visitedTabs = {0};
-
-  // Кэшированные экраны табов — создаются один раз при первом открытии.
-  final Map<int, Widget> _cachedTabs = {};
+  HomeTab _tab = HomeTab.home;
 
   @override
   void initState() {
     super.initState();
-    // На старте грузим только данные для главного экрана.
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadHomeData());
   }
 
-  /// Минимальная загрузка данных для главного экрана.
-  /// Featured/Trending для каталога видео грузятся лениво, когда пользователь
-  /// открывает вкладку Videos.
+  @override
+  void dispose() {
+    _progress.dispose();
+    super.dispose();
+  }
+
+  /// Грузим только то, что нужно главной: подборки для полок,
+  /// словарь для плана дня и прогресс для шапки.
+  /// Остальные табы поднимают свои данные сами при первом открытии.
   Future<void> _loadHomeData() async {
     if (!mounted) return;
-    // Запускаем параллельно, но только то, что реально нужно для Home:
-    // featured (для секции "Рекомендуем"), trending (для секции "В тренде"),
-    // и vocabulary (для bento-статистики и daily plan).
-    context.read<VideoProvider>().loadFeatured();
-    context.read<VideoProvider>().loadTrending();
-    context.read<VocabularyProvider>().loadAll();
+    final videos = context.read<VideoProvider>();
+    final vocabulary = context.read<VocabularyProvider>();
 
+    await Future.wait<void>([
+      videos.loadFeatured(),
+      videos.loadTrending(),
+      vocabulary.loadAll(),
+      _loadProgress(),
+    ]);
+  }
+
+  Future<void> _loadProgress() async {
     final progress = await SupabaseService.getUserProgress();
-    if (mounted) setState(() => _progress = progress);
+    if (mounted) _progress.value = progress;
   }
 
-  /// Загрузка данных для конкретного таба при первом переходе на него.
-  void _onTabSelected(int index) {
-    if (index == _currentIndex) return;
-    final isFirstVisit = !_visitedTabs.contains(index);
-    setState(() {
-      _currentIndex = index;
-      _visitedTabs.add(index);
-    });
-    if (isFirstVisit) {
-      _prefetchForTab(index);
-    }
-  }
-
-  void _prefetchForTab(int index) {
-    // По мере открытия таба запускаем только его собственный prefetch.
-    // CatalogScreen / MovieCatalogScreen / VocabularyScreen / ProfileScreen
-    // сами умеют грузить нужные данные в своём initState, поэтому здесь
-    // мы только инициируем построение виджета — необходимые запросы пойдут
-    // из самого экрана.
-  }
-
-  Widget _buildTab(int index) {
-    // Ленивое построение: если таб ещё не открывался — показываем заглушку.
-    if (!_visitedTabs.contains(index)) {
-      return const SizedBox.shrink();
-    }
-    // Кэшируем уже построенные табы, чтобы не пересоздавать их при переключении.
-    return _cachedTabs.putIfAbsent(index, () {
-      switch (index) {
-        case 0:
-          return _HomeTab(progress: _progress, onRefresh: _loadHomeData);
-        case 1:
-          return const CatalogScreen();
-        case 2:
-          return const MovieCatalogScreen();
-        case 3:
-          return const VocabularyScreen();
-        case 4:
-          return const ProfileScreen();
-        default:
-          return const SizedBox.shrink();
-      }
-    });
+  void _openTab(HomeTab tab) {
+    if (tab == _tab) return;
+    setState(() => _tab = tab);
   }
 
   @override
   Widget build(BuildContext context) {
-    // HomeTab нужно пересоздавать при изменении _progress, поэтому
-    // сбрасываем кэш для нулевого таба (это дешёво — он не хранит состояние
-    // помимо контроллеров вложенных списков, которые перестроятся быстро).
-    _cachedTabs.remove(0);
-
-    return Scaffold(
-      body: IndexedStack(
-        index: _currentIndex,
-        children: List.generate(5, _buildTab),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: _onTabSelected,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home_rounded),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.explore_outlined),
-            selectedIcon: Icon(Icons.explore_rounded),
-            label: 'Videos',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.movie_outlined),
-            selectedIcon: Icon(Icons.movie_rounded),
-            label: 'Movies',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.school_outlined),
-            selectedIcon: Icon(Icons.school_rounded),
-            label: 'Words',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person_rounded),
-            label: 'Profile',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//                          HOME TAB
-// ═══════════════════════════════════════════════════════════════
-class _HomeTab extends StatelessWidget {
-  final UserProgress progress;
-  final VoidCallback onRefresh;
-
-  const _HomeTab({required this.progress, required this.onRefresh});
-
-  String _greetingByHour() {
-    final h = DateTime.now().hour;
-    if (h < 5) return 'Доброй ночи';
-    if (h < 12) return 'Доброе утро';
-    if (h < 18) return 'Добрый день';
-    return 'Добрый вечер';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    // Узкая подписка: только на displayName, а не на весь AuthProvider.
-    final userName = context.select<AuthProvider, String>((a) => a.displayName);
-
-    return Scaffold(
-      backgroundColor: cs.surface,
-      body: RefreshIndicator(
-        onRefresh: () async => onRefresh(),
-        child: CustomScrollView(
-          physics: const BouncingScrollPhysics(
-              parent: AlwaysScrollableScrollPhysics()),
-          slivers: [
-            // ─── HERO ───
-            SliverToBoxAdapter(
-              child: _HeroHeader(
-                greeting: _greetingByHour(),
-                userName: userName,
-                progress: progress,
-              ).animate().fadeIn(duration: 350.ms).slideY(begin: -0.05),
-            ),
-
-            // ─── BENTO STATS ───
-            // Изолирован в Selector — пересчитывается только при изменении
-            // счётчиков (а не при любом обновлении словаря).
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-              sliver: SliverToBoxAdapter(
-                child: _BentoStatsSelector(progress: progress)
-                    .animate(delay: 80.ms)
-                    .fadeIn(duration: 350.ms)
-                    .slideY(begin: 0.05),
-              ),
-            ),
-
-            // ─── DAILY PLAN CTA ───
-            SliverToBoxAdapter(
-              child: _DailyPlanSelector(progress: progress),
-            ),
-
-            // ─── QUICK ACTIONS ───
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
-              sliver: SliverToBoxAdapter(
-                child: _QuickActionsRow()
-                    .animate(delay: 200.ms)
-                    .fadeIn()
-                    .slideY(begin: 0.1),
-              ),
-            ),
-
-            // ─── CONTINUE WATCHING / FAVORITES ───
-            // Подписка только на список favoriteVideos.
-            SliverToBoxAdapter(
-              child: _FavoritesSection(),
-            ),
-
-            // ─── FEATURED ───
-            SliverToBoxAdapter(
-              child: _SectionHeader(
-                title: 'Рекомендуем',
-                icon: Icons.auto_awesome_rounded,
-                onSeeAll: () {},
-              ),
-            ),
-            const SliverToBoxAdapter(child: SizedBox(height: 12)),
-            SliverToBoxAdapter(child: _FeaturedSection()),
-            const SliverToBoxAdapter(child: SizedBox(height: 32)),
-
-            // ─── TRENDING ───
-            SliverToBoxAdapter(
-              child: _SectionHeader(
-                title: 'В тренде',
-                icon: Icons.trending_up_rounded,
-                onSeeAll: () {},
-              ),
-            ),
-            const SliverToBoxAdapter(child: SizedBox(height: 12)),
-            SliverToBoxAdapter(child: _TrendingSection()),
-
-            // ─── ADD VIDEO BUTTON ───
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-              sliver: SliverToBoxAdapter(
-                child: _AddVideoBanner(
-                  onTap: () => _showAddVideoDialog(context),
-                ).animate(delay: 600.ms).fadeIn(),
-              ),
-            ),
+    return HomeScope(
+      openTab: _openTab,
+      reload: _loadHomeData,
+      child: Scaffold(
+        body: _LazyIndexedStack(
+          index: _tab.index,
+          builders: [
+            (_) => _HomeFeed(progress: _progress),
+            (_) => const CatalogScreen(),
+            (_) => const MovieCatalogScreen(),
+            (_) => const VocabularyScreen(),
+            (_) => const ProfileScreen(),
           ],
         ),
-      ),
-    );
-  }
-
-  void _showAddVideoDialog(BuildContext context) {
-    final controller = TextEditingController();
-    final cs = Theme.of(context).colorScheme;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          left: 24,
-          right: 24,
-          top: 8,
-          bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Добавить видео',
-                style: Theme.of(ctx).textTheme.titleLarge),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              decoration: InputDecoration(
-                hintText: 'YouTube URL или прямая ссылка (.mp4)',
-                prefixIcon: Icon(Icons.link, color: cs.primary),
-              ),
-              autofocus: true,
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _tab.index,
+          onDestinationSelected: (i) => _openTab(HomeTab.values[i]),
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home_rounded),
+              label: 'Главная',
             ),
-            const SizedBox(height: 16),
-            FilledButton(
-              onPressed: () async {
-                final text = controller.text.trim();
-                if (text.isEmpty) return;
-                Navigator.pop(ctx);
-
-                final isVidApi =
-                    text.toLowerCase().contains('vidapi.xyz') ||
-                        text.toLowerCase().startsWith('tt');
-                final isDirect = text.toLowerCase().endsWith('.mp4') ||
-                    text.toLowerCase().endsWith('.m3u8') ||
-                    (text.startsWith('http') &&
-                        !text.contains('youtu') &&
-                        !isVidApi);
-
-                VideoItem? video;
-                if (isVidApi) {
-                  video = await context
-                      .read<VideoProvider>()
-                      .importVidApiVideo(text);
-                } else if (isDirect) {
-                  video = await context
-                      .read<VideoProvider>()
-                      .importCustomVideo(text);
-                } else {
-                  video = await context
-                      .read<VideoProvider>()
-                      .importYouTubeVideo(text);
-                }
-
-                if (video != null && context.mounted) {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => PlayerScreen(video: video!)),
-                  );
-                }
-              },
-              child: const Text('Импортировать и смотреть'),
+            NavigationDestination(
+              icon: Icon(Icons.explore_outlined),
+              selectedIcon: Icon(Icons.explore_rounded),
+              label: 'Видео',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.movie_outlined),
+              selectedIcon: Icon(Icons.movie_rounded),
+              label: 'Фильмы',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.school_outlined),
+              selectedIcon: Icon(Icons.school_rounded),
+              label: 'Слова',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person_rounded),
+              label: 'Профиль',
             ),
           ],
         ),
@@ -341,326 +163,233 @@ class _HomeTab extends StatelessWidget {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//          ИЗОЛИРОВАННЫЕ СЕКЦИИ (Selector-based)
-// ═══════════════════════════════════════════════════════════════
+/// IndexedStack, который строит страницу только после первого перехода на неё
+/// и после этого сохраняет её состояние.
+class _LazyIndexedStack extends StatefulWidget {
+  const _LazyIndexedStack({required this.index, required this.builders});
 
-/// Bento-сетка статистики — перестраивается только при изменении счётчиков
-/// слов в словаре, а не при каждом изменении любого поля провайдера.
-class _BentoStatsSelector extends StatelessWidget {
-  final UserProgress progress;
-  const _BentoStatsSelector({required this.progress});
+  final int index;
+  final List<WidgetBuilder> builders;
+
+  @override
+  State<_LazyIndexedStack> createState() => _LazyIndexedStackState();
+}
+
+class _LazyIndexedStackState extends State<_LazyIndexedStack> {
+  late final List<bool> _activated =
+      List<bool>.filled(widget.builders.length, false);
 
   @override
   Widget build(BuildContext context) {
-    // Подписываемся только на три числа из VocabularyProvider.
-    final counts = context.select<VocabularyProvider, _VocabCounts>(
-      (v) => _VocabCounts(
-        newCount: v.newCount,
-        learning: v.learningCount,
-      ),
-    );
-    return _BentoStatsGrid(
-      progress: progress,
-      newCount: counts.newCount,
-      learningCount: counts.learning,
-    );
-  }
-}
+    _activated[widget.index] = true;
 
-class _VocabCounts {
-  final int newCount;
-  final int learning;
-  const _VocabCounts({required this.newCount, required this.learning});
-
-  @override
-  bool operator ==(Object other) =>
-      other is _VocabCounts &&
-      other.newCount == newCount &&
-      other.learning == learning;
-
-  @override
-  int get hashCode => Object.hash(newCount, learning);
-}
-
-/// Карточка ежедневного плана — реагирует только на длину очереди повторения.
-class _DailyPlanSelector extends StatelessWidget {
-  final UserProgress progress;
-  const _DailyPlanSelector({required this.progress});
-
-  @override
-  Widget build(BuildContext context) {
-    final reviewLen =
-        context.select<VocabularyProvider, int>((v) => v.reviewQueue.length);
-    final visible = reviewLen > 0 || progress.wordsToReview > 0;
-    if (!visible) return const SizedBox.shrink();
-
-    final value =
-        progress.wordsToReview > 0 ? progress.wordsToReview : reviewLen;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-      child: _DailyPlanCard(wordsToReview: value)
-          .animate(delay: 150.ms)
-          .fadeIn()
-          .slideY(begin: 0.1),
-    );
-  }
-}
-
-/// Секция избранных видео — подписана только на список favoriteVideos
-/// (через identityHashCode, чтобы не сравнивать поэлементно).
-class _FavoritesSection extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    final favs = context.select<VideoProvider, List<VideoItem>>(
-      (v) => v.favoriteVideos,
-    );
-    if (favs.isEmpty) return const SizedBox.shrink();
-
-    return Column(
+    return IndexedStack(
+      index: widget.index,
       children: [
-        _SectionHeader(
-          title: 'Продолжить',
-          icon: Icons.play_circle_outline_rounded,
-          onSeeAll: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const FavoritesScreen()),
-          ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          height: 270,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: favs.length,
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            itemBuilder: (ctx, i) {
-              final v = favs[i];
-              return Container(
-                width: 280,
-                margin: const EdgeInsets.only(right: 14),
-                child: VideoCard(
-                  video: v,
-                  onTap: () => Navigator.push(
-                    ctx,
-                    MaterialPageRoute(builder: (_) => PlayerScreen(video: v)),
-                  ),
-                ),
-              )
-                  .animate(delay: (300 + i * 60).ms)
-                  .fadeIn()
-                  .slideX(begin: 0.08);
-            },
-          ),
-        ),
-        const SizedBox(height: 32),
+        for (var i = 0; i < widget.builders.length; i++)
+          if (_activated[i])
+            widget.builders[i](context)
+          else
+            const SizedBox.shrink(),
       ],
     );
   }
 }
 
-/// Секция featured-видео — изолированная подписка на список + isLoading.
-class _FeaturedSection extends StatelessWidget {
+/// Лента главного экрана.
+class _HomeFeed extends StatelessWidget {
+  const _HomeFeed({required this.progress});
+
+  final ValueListenable<UserProgress?> progress;
+
   @override
   Widget build(BuildContext context) {
-    final featured = context.select<VideoProvider, List<VideoItem>>(
-      (v) => v.featuredVideos,
-    );
-    final isLoading =
-        context.select<VideoProvider, bool>((v) => v.isLoading);
+    final scope = HomeScope.of(context);
 
-    if (isLoading && featured.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 36),
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-    if (featured.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: _EmptyVideosCard()
-            .animate(delay: 300.ms)
-            .fadeIn()
-            .slideY(begin: 0.1),
-      );
-    }
-    return SizedBox(
-      height: 270,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        itemCount: featured.length,
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        itemBuilder: (ctx, i) {
-          final v = featured[i];
-          return Container(
-            width: 280,
-            margin: const EdgeInsets.only(right: 14),
-            child: VideoCard(
-              video: v,
-              onTap: () => Navigator.push(
-                ctx,
-                MaterialPageRoute(builder: (_) => PlayerScreen(video: v)),
+    return SafeArea(
+      bottom: false,
+      child: RefreshIndicator(
+        onRefresh: scope.reload,
+        child: CustomScrollView(
+          physics: const BouncingScrollPhysics(
+            parent: AlwaysScrollableScrollPhysics(),
+          ),
+          slivers: [
+            SliverToBoxAdapter(
+              child: _HeroSection(progress: progress).entrance(0),
+            ),
+            SliverToBoxAdapter(
+              child: const _QuickAccessGrid().entrance(1),
+            ),
+            SliverToBoxAdapter(
+              child: _DailyPlanSection(progress: progress).entrance(2),
+            ),
+            SliverToBoxAdapter(
+              child: const _ContinueSection().entrance(3),
+            ),
+            SliverToBoxAdapter(
+              child: const _FeaturedSection().entrance(4),
+            ),
+            SliverToBoxAdapter(
+              child: const _TrendingSection().entrance(5),
+            ),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(_gutter, 8, _gutter, 28),
+                child: _AddVideoBanner(
+                  onTap: () => _showAddVideoSheet(context),
+                ).entrance(6),
               ),
             ),
-          )
-              .animate(delay: (320 + i * 60).ms)
-              .fadeIn()
-              .slideX(begin: 0.08);
-        },
+          ],
+        ),
       ),
     );
   }
 }
 
-/// Секция trending-видео.
-class _TrendingSection extends StatelessWidget {
+/// Одна выдержанная анимация появления на секцию — без покадрового
+/// стаггера на каждом элементе списков.
+extension _Entrance on Widget {
+  Widget entrance(int order) => animate(
+        delay: Duration(milliseconds: 40 * order),
+      )
+          .fadeIn(duration: 260.ms, curve: Curves.easeOut)
+          .slideY(begin: 0.03, end: 0, curve: Curves.easeOutCubic);
+}
+
+// ── Шапка ───────────────────────────────────────────────────────────────
+
+class _HeroSection extends StatelessWidget {
+  const _HeroSection({required this.progress});
+
+  final ValueListenable<UserProgress?> progress;
+
   @override
   Widget build(BuildContext context) {
-    final trending = context.select<VideoProvider, List<VideoItem>>(
-      (v) => v.trendingVideos,
-    );
-    final isLoading =
-        context.select<VideoProvider, bool>((v) => v.isLoading);
-
-    if (isLoading && trending.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 36),
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    final items = trending.take(5).toList();
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        children: [
-          for (int i = 0; i < items.length; i++)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: VideoCard(
-                video: items[i],
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => PlayerScreen(video: items[i])),
-                ),
-              ),
-            )
-                .animate(delay: (400 + i * 60).ms)
-                .fadeIn()
-                .slideX(begin: 0.05),
-        ],
+    return ValueListenableBuilder<UserProgress?>(
+      valueListenable: progress,
+      builder: (context, value, _) => _HeroCard(
+        progress: value ?? const UserProgress(),
+        isLoading: value == null,
       ),
     );
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//                      HERO HEADER
-// ═══════════════════════════════════════════════════════════════
-class _HeroHeader extends StatelessWidget {
-  final String greeting;
-  final String userName;
+class _HeroCard extends StatelessWidget {
+  const _HeroCard({required this.progress, required this.isLoading});
+
   final UserProgress progress;
-  const _HeroHeader({
-    required this.greeting,
-    required this.userName,
-    required this.progress,
-  });
+  final bool isLoading;
+
+  String get _greeting {
+    final hour = DateTime.now().hour;
+    if (hour < 5) return 'Доброй ночи';
+    if (hour < 12) return 'Доброе утро';
+    if (hour < 18) return 'Добрый день';
+    return 'Добрый вечер';
+  }
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
+    final theme = Theme.of(context);
+    final palette = _HomePalette.of(context);
+    final userName = context.select<AuthProvider, String>((a) => a.displayName);
+    final scope = HomeScope.of(context);
+
+    final goalReached = progress.dailyProgressPercent >= 1;
+    final left =
+        (progress.dailyGoalMinutes - progress.todayMinutes).clamp(0, 9999);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+      padding: const EdgeInsets.fromLTRB(_gutter, 8, _gutter, 20),
       child: Container(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(32),
+          borderRadius: BorderRadius.circular(28),
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              cs.primaryContainer,
-              cs.tertiaryContainer.withOpacity(0.7),
-            ],
+            colors: [palette.heroSurface, palette.heroSurfaceAlt],
           ),
+          border: Border.all(color: palette.heroBorder),
         ),
         child: Column(
           children: [
-            // Top bar: avatar + actions
             Row(
               children: [
-                _AvatarCircle(name: userName),
+                _Avatar(
+                  name: userName,
+                  onTap: () => scope.openTab(HomeTab.profile),
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(greeting,
-                          style: tt.bodyMedium?.copyWith(
-                              color: cs.onPrimaryContainer.withOpacity(0.7))),
                       Text(
-                        userName,
+                        _greeting,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: palette.heroForegroundMuted),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        userName.isEmpty ? 'Гость' : userName,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: tt.titleLarge?.copyWith(
-                          color: cs.onPrimaryContainer,
-                          fontWeight: FontWeight.w800,
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          color: palette.heroForeground,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                     ],
                   ),
                 ),
-                _CircleIconButton(
+                _HeroAction(
                   icon: Icons.search_rounded,
                   tooltip: 'Словарь',
-                  onTap: () => Navigator.push(
-                    context,
+                  palette: palette,
+                  onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
-                        builder: (_) => const FullDictionaryScreen()),
+                      builder: (_) => const FullDictionaryScreen(),
+                    ),
                   ),
-                  bg: cs.surface.withOpacity(0.45),
-                  fg: cs.onPrimaryContainer,
                 ),
                 const SizedBox(width: 8),
-                _CircleIconButton(
-                  icon: Icons.notifications_none_rounded,
-                  tooltip: 'Уведомления',
-                  onTap: () {},
-                  bg: cs.surface.withOpacity(0.45),
-                  fg: cs.onPrimaryContainer,
+                _HeroAction(
+                  icon: Icons.add_rounded,
+                  tooltip: 'Добавить видео',
+                  palette: palette,
+                  onTap: () => _showAddVideoSheet(context),
                 ),
               ],
             ),
-            const SizedBox(height: 22),
-
-            // Progress Hero
+            const SizedBox(height: 24),
             Row(
               children: [
                 ProgressRing(
                   progress: progress.dailyProgressPercent,
-                  size: 96,
-                  strokeWidth: 9,
-                  color: cs.primary,
-                  backgroundColor: cs.primary.withOpacity(0.18),
+                  size: 92,
+                  strokeWidth: 8,
+                  color: palette.accent,
+                  backgroundColor: palette.ringTrack,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
                         '${progress.todayMinutes}',
-                        style: tt.headlineSmall?.copyWith(
-                          color: cs.onPrimaryContainer,
-                          fontWeight: FontWeight.w800,
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          color: palette.heroForeground,
+                          fontWeight: FontWeight.w700,
+                          height: 1,
                         ),
                       ),
+                      const SizedBox(height: 2),
                       Text(
                         'мин',
-                        style: tt.labelSmall?.copyWith(
-                          color: cs.onPrimaryContainer.withOpacity(0.7),
-                        ),
+                        style: theme.textTheme.labelSmall
+                            ?.copyWith(color: palette.heroForegroundMuted),
                       ),
                     ],
                   ),
@@ -670,46 +399,60 @@ class _HeroHeader extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: cs.surface.withOpacity(0.55),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text('🔥', style: TextStyle(fontSize: 14)),
-                            const SizedBox(width: 6),
-                            Text(
-                              '${progress.streakDays} дн. подряд',
-                              style: tt.labelMedium?.copyWith(
-                                fontWeight: FontWeight.w700,
-                                color: cs.onPrimaryContainer,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 10),
                       Text(
-                        progress.dailyProgressPercent >= 1
-                            ? 'Цель дня выполнена!'
+                        goalReached
+                            ? 'Цель дня выполнена'
                             : 'Цель дня · ${progress.dailyGoalMinutes} мин',
-                        style: tt.titleMedium?.copyWith(
-                          color: cs.onPrimaryContainer,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: palette.heroForeground,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '${progress.totalWordsLearned} слов изучено',
-                        style: tt.bodySmall?.copyWith(
-                          color: cs.onPrimaryContainer.withOpacity(0.75),
-                        ),
+                        _goalHint(goalReached, left),
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: palette.heroForegroundMuted),
                       ),
                     ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Container(height: 1, color: palette.heroBorder),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: _HeroStat(
+                    icon: Icons.local_fire_department_rounded,
+                    iconColor: _Accent.coral,
+                    value: '${progress.streakDays}',
+                    label: _plural(
+                      progress.streakDays,
+                      'день подряд',
+                      'дня подряд',
+                      'дней подряд',
+                    ),
+                    palette: palette,
+                    muted: progress.streakDays == 0,
+                  ),
+                ),
+                Container(width: 1, height: 32, color: palette.heroBorder),
+                Expanded(
+                  child: _HeroStat(
+                    icon: Icons.check_circle_outline_rounded,
+                    iconColor: _Accent.teal,
+                    value: isLoading ? '—' : '${progress.totalWordsLearned}',
+                    label: _plural(
+                      progress.totalWordsLearned,
+                      'слово изучено',
+                      'слова изучено',
+                      'слов изучено',
+                    ),
+                    palette: palette,
+                    muted: progress.totalWordsLearned == 0,
                   ),
                 ),
               ],
@@ -719,216 +462,210 @@ class _HeroHeader extends StatelessWidget {
       ),
     );
   }
-}
 
-class _AvatarCircle extends StatelessWidget {
-  final String name;
-  const _AvatarCircle({required this.name});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
-    final initials = name.isEmpty
-        ? '?'
-        : name
-            .split(RegExp(r'\s+'))
-            .where((p) => p.isNotEmpty)
-            .take(2)
-            .map((p) => p[0].toUpperCase())
-            .join();
-
-    return Container(
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [cs.primary, cs.tertiary],
-        ),
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: cs.primary.withOpacity(0.3),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          )
-        ],
-      ),
-      child: Center(
-        child: Text(
-          initials,
-          style: tt.titleMedium?.copyWith(
-            color: cs.onPrimary,
-            fontWeight: FontWeight.w800,
-          ),
-        ),
-      ),
-    );
+  String _goalHint(bool goalReached, int left) {
+    if (goalReached) return 'Отличный результат, так держать';
+    if (progress.todayMinutes == 0) return 'Начните с короткого видео';
+    return 'Осталось $left ${_plural(left, 'минута', 'минуты', 'минут')}';
   }
 }
 
-class _CircleIconButton extends StatelessWidget {
-  final IconData icon;
-  final String? tooltip;
-  final VoidCallback onTap;
-  final Color bg;
-  final Color fg;
-  const _CircleIconButton({
+class _HeroStat extends StatelessWidget {
+  const _HeroStat({
     required this.icon,
-    required this.onTap,
-    required this.bg,
-    required this.fg,
-    this.tooltip,
+    required this.iconColor,
+    required this.value,
+    required this.label,
+    required this.palette,
+    this.muted = false,
   });
+
+  final IconData icon;
+  final Color iconColor;
+  final String value;
+  final String label;
+  final _HomePalette palette;
+  final bool muted;
 
   @override
   Widget build(BuildContext context) {
-    final btn = Material(
-      color: bg,
-      shape: const CircleBorder(),
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: SizedBox(
-          width: 42,
-          height: 42,
-          child: Icon(icon, color: fg, size: 20),
-        ),
-      ),
-    );
-    return tooltip != null ? Tooltip(message: tooltip!, child: btn) : btn;
-  }
-}
+    final theme = Theme.of(context);
 
-// ═══════════════════════════════════════════════════════════════
-//                      BENTO STATS GRID
-// ═══════════════════════════════════════════════════════════════
-class _BentoStatsGrid extends StatelessWidget {
-  final UserProgress progress;
-  final int newCount;
-  final int learningCount;
-
-  const _BentoStatsGrid({
-    required this.progress,
-    required this.newCount,
-    required this.learningCount,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return Column(
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: _StatTile(
-                icon: Icons.bolt_rounded,
-                label: 'Сегодня слов',
-                value: '${progress.todayWords}',
-                color: cs.primary,
-                bg: cs.primaryContainer,
-                fg: cs.onPrimaryContainer,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _StatTile(
-                icon: Icons.history_toggle_off_rounded,
-                label: 'К повтору',
-                value: '${progress.wordsToReview}',
-                color: cs.tertiary,
-                bg: cs.tertiaryContainer,
-                fg: cs.onTertiaryContainer,
-              ),
-            ),
-          ],
+        Icon(
+          icon,
+          size: 18,
+          color: muted ? palette.heroForegroundMuted : iconColor,
         ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: _StatTile(
-                icon: Icons.school_rounded,
-                label: 'Изучено',
-                value: '${progress.totalWordsLearned}',
-                color: Colors.green,
-                bg: Colors.green.withOpacity(0.13),
-                fg: Colors.green.shade700,
+        const SizedBox(width: 8),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                value,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: palette.heroForeground,
+                  fontWeight: FontWeight.w700,
+                  height: 1.1,
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _StatTile(
-                icon: Icons.psychology_rounded,
-                label: 'В процессе',
-                value: '${learningCount + newCount}',
-                color: cs.secondary,
-                bg: cs.secondaryContainer,
-                fg: cs.onSecondaryContainer,
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: palette.heroForegroundMuted),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ],
     );
   }
 }
 
-class _StatTile extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color color;
-  final Color bg;
-  final Color fg;
+class _Avatar extends StatelessWidget {
+  const _Avatar({required this.name, required this.onTap});
 
-  const _StatTile({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.color,
-    required this.bg,
-    required this.fg,
-  });
+  final String name;
+  final VoidCallback onTap;
+
+  String get _initials {
+    final parts = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return '?';
+    if (parts.length == 1) return parts.first[0].toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final tt = Theme.of(context).textTheme;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(22),
+    return Semantics(
+      button: true,
+      label: 'Профиль',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [_Accent.violet, _Accent.teal],
+            ),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            _initials,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    );
+  }
+}
+
+class _HeroAction extends StatelessWidget {
+  const _HeroAction({
+    required this.icon,
+    required this.tooltip,
+    required this.palette,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final _HomePalette palette;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: palette.heroLayer,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: SizedBox(
+            width: 42,
+            height: 42,
+            child: Icon(icon, size: 20, color: palette.heroForeground),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Быстрый доступ ──────────────────────────────────────────────────────
+
+class _QuickAccessGrid extends StatelessWidget {
+  const _QuickAccessGrid();
+
+  @override
+  Widget build(BuildContext context) {
+    final inProgress = context.select<VocabularyProvider, int>(
+      (v) => v.newCount + v.learningCount,
+    );
+    final scope = HomeScope.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(_gutter, 0, _gutter, 20),
+      child: GridView.count(
+        crossAxisCount: 2,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: EdgeInsets.zero,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        childAspectRatio: 1.5,
         children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.18),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(icon, color: color, size: 20),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            value,
-            style: tt.headlineSmall?.copyWith(
-              color: fg,
-              fontWeight: FontWeight.w800,
-              height: 1.0,
+          _QuickAccessTile(
+            icon: Icons.fitness_center_rounded,
+            title: 'Упражнения',
+            subtitle: 'Тренажёры',
+            color: _Accent.violet,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ExercisesHubScreen()),
             ),
           ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: tt.bodySmall?.copyWith(color: fg.withOpacity(0.75)),
+          _QuickAccessTile(
+            icon: Icons.menu_book_rounded,
+            title: 'Словарь',
+            subtitle: 'Поиск и перевод',
+            color: _Accent.teal,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const FullDictionaryScreen()),
+            ),
+          ),
+          _QuickAccessTile(
+            icon: Icons.school_rounded,
+            title: 'Мои слова',
+            subtitle:
+                inProgress > 0 ? '$inProgress в изучении' : 'Повторение',
+            color: _Accent.amber,
+            onTap: () => scope.openTab(HomeTab.words),
+          ),
+          _QuickAccessTile(
+            icon: Icons.movie_outlined,
+            title: 'Фильмы',
+            subtitle: 'Каталог',
+            color: _Accent.coral,
+            onTap: () => scope.openTab(HomeTab.movies),
           ),
         ],
       ),
@@ -936,293 +673,405 @@ class _StatTile extends StatelessWidget {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//                      DAILY PLAN CARD
-// ═══════════════════════════════════════════════════════════════
-class _DailyPlanCard extends StatelessWidget {
-  final int wordsToReview;
-  const _DailyPlanCard({required this.wordsToReview});
+class _QuickAccessTile extends StatelessWidget {
+  const _QuickAccessTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color color;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
+    final theme = Theme.of(context);
+    final palette = _HomePalette.of(context);
 
-    return InkWell(
-      borderRadius: BorderRadius.circular(28),
-      onTap: () {
-        final vocab = context.read<VocabularyProvider>();
-        vocab.preparePractice();
-        // Open vocabulary screen by switching tab — simplest: push standalone
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const VocabularyScreen()),
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(22, 18, 18, 18),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(28),
-          gradient: LinearGradient(
-            begin: Alignment.centerLeft,
-            end: Alignment.centerRight,
-            colors: [
-              cs.primary,
-              cs.primary.withOpacity(0.78),
-            ],
+    return Material(
+      color: palette.cardSurface,
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: palette.cardBorder),
           ),
-          boxShadow: [
-            BoxShadow(
-              color: cs.primary.withOpacity(0.3),
-              blurRadius: 24,
-              offset: const Offset(0, 12),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
                 children: [
-                  Row(
-                    children: [
-                      Icon(Icons.flash_on_rounded,
-                          color: cs.onPrimary, size: 18),
-                      const SizedBox(width: 6),
-                      Text(
-                        'СЕГОДНЯ',
-                        style: tt.labelMedium?.copyWith(
-                          color: cs.onPrimary.withOpacity(0.85),
-                          letterSpacing: 1.6,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '$wordsToReview ${_pluralize(wordsToReview)} к повтору',
-                    style: tt.titleLarge?.copyWith(
-                      color: cs.onPrimary,
-                      fontWeight: FontWeight.w800,
-                      height: 1.15,
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(12),
                     ),
+                    child: Icon(icon, color: color, size: 20),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Закрепи изученное за 5 минут',
-                    style: tt.bodyMedium?.copyWith(
-                      color: cs.onPrimary.withOpacity(0.85),
-                    ),
+                  const Spacer(),
+                  Icon(
+                    Icons.arrow_outward_rounded,
+                    size: 16,
+                    color: palette.hint,
                   ),
                 ],
               ),
-            ),
-            const SizedBox(width: 12),
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                color: cs.onPrimary.withOpacity(0.18),
-                borderRadius: BorderRadius.circular(20),
+              const Spacer(),
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: palette.onSurface,
+                ),
               ),
-              child: Icon(Icons.play_arrow_rounded,
-                  color: cs.onPrimary, size: 32),
-            ),
-          ],
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: palette.onSurfaceMuted),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+}
 
-  String _pluralize(int n) {
-    final mod10 = n % 10;
-    final mod100 = n % 100;
-    if (mod10 == 1 && mod100 != 11) return 'слово';
-    if ([2, 3, 4].contains(mod10) && ![12, 13, 14].contains(mod100)) {
-      return 'слова';
-    }
-    return 'слов';
+// ── План дня ────────────────────────────────────────────────────────────
+
+class _DailyPlanSection extends StatelessWidget {
+  const _DailyPlanSection({required this.progress});
+
+  final ValueListenable<UserProgress?> progress;
+
+  @override
+  Widget build(BuildContext context) {
+    final queueLength =
+        context.select<VocabularyProvider, int>((v) => v.reviewQueue.length);
+
+    return ValueListenableBuilder<UserProgress?>(
+      valueListenable: progress,
+      builder: (context, value, _) {
+        final fromProgress = value?.wordsToReview ?? 0;
+        final words = fromProgress > 0 ? fromProgress : queueLength;
+        if (words == 0) return const SizedBox.shrink();
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(_gutter, 0, _gutter, 24),
+          child: _DailyPlanCard(wordsToReview: words),
+        );
+      },
+    );
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//                      QUICK ACTIONS ROW
-// ═══════════════════════════════════════════════════════════════
-class _QuickActionsRow extends StatelessWidget {
+class _DailyPlanCard extends StatelessWidget {
+  const _DailyPlanCard({required this.wordsToReview});
+
+  final int wordsToReview;
+
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
-    final items = <_QuickActionItem>[
-      _QuickActionItem(
-        icon: Icons.fitness_center_rounded,
-        label: 'Упражнения',
-        color: cs.primary,
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const ExercisesHubScreen()),
+    return Material(
+      borderRadius: BorderRadius.circular(24),
+      clipBehavior: Clip.antiAlias,
+      color: cs.primary,
+      child: InkWell(
+        onTap: () {
+          context.read<VocabularyProvider>().preparePractice();
+          HomeScope.of(context).openTab(HomeTab.words);
+        },
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(20, 18, 16, 18),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              colors: [cs.primary, Color.alphaBlend(
+                cs.tertiary.withValues(alpha: 0.35),
+                cs.primary,
+              )],
+            ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'ПЛАН НА СЕГОДНЯ',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: cs.onPrimary.withValues(alpha: 0.8),
+                        letterSpacing: 1.4,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '$wordsToReview '
+                      '${_plural(wordsToReview, 'слово', 'слова', 'слов')} '
+                      'к повторению',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        color: cs.onPrimary,
+                        fontWeight: FontWeight.w700,
+                        height: 1.15,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Займёт около 5 минут',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.onPrimary.withValues(alpha: 0.85),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: cs.onPrimary.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Icon(
+                  Icons.play_arrow_rounded,
+                  color: cs.onPrimary,
+                  size: 30,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
-      _QuickActionItem(
-        icon: Icons.menu_book_rounded,
-        label: 'Словарь',
-        color: cs.tertiary,
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const FullDictionaryScreen()),
-        ),
-      ),
-      _QuickActionItem(
-        icon: Icons.school_rounded,
-        label: 'Мои слова',
-        color: cs.secondary,
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const VocabularyScreen()),
-        ),
-      ),
-      _QuickActionItem(
-        icon: Icons.movie_outlined,
-        label: 'Фильмы',
-        color: Colors.deepOrange,
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const MovieCatalogScreen()),
-        ),
-      ),
-    ];
+    );
+  }
+}
 
-    return Row(
+// ── Полки с видео ───────────────────────────────────────────────────────
+
+class _ContinueSection extends StatelessWidget {
+  const _ContinueSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final favorites =
+        context.select<VideoProvider, List<VideoItem>>((v) => v.favoriteVideos);
+    if (favorites.isEmpty) return const SizedBox.shrink();
+
+    return Column(
       children: [
-        for (int i = 0; i < items.length; i++) ...[
-          Expanded(child: _QuickActionTile(item: items[i])),
-          if (i < items.length - 1) const SizedBox(width: 10),
-        ]
+        _SectionHeader(
+          title: 'Продолжить',
+          icon: Icons.play_circle_outline_rounded,
+          actionLabel: 'Все',
+          onAction: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+          ),
+        ),
+        _VideoRail(videos: favorites),
+        const SizedBox(height: 28),
       ],
     );
   }
 }
 
-class _QuickActionItem {
-  final IconData icon;
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
-  _QuickActionItem({
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.onTap,
-  });
-}
-
-class _QuickActionTile extends StatelessWidget {
-  final _QuickActionItem item;
-  const _QuickActionTile({required this.item});
+class _FeaturedSection extends StatelessWidget {
+  const _FeaturedSection();
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
+    final featured =
+        context.select<VideoProvider, List<VideoItem>>((v) => v.featuredVideos);
+    final isLoading = context.select<VideoProvider, bool>((v) => v.isLoading);
+    final scope = HomeScope.of(context);
 
-    return InkWell(
-      onTap: item.onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
-        decoration: BoxDecoration(
-          color: cs.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: cs.outlineVariant.withOpacity(0.25)),
+    return Column(
+      children: [
+        _SectionHeader(
+          title: 'Рекомендуем',
+          icon: Icons.auto_awesome_rounded,
+          actionLabel: featured.isEmpty ? null : 'Все',
+          onAction: featured.isEmpty ? null : () => scope.openTab(HomeTab.videos),
         ),
-        child: Column(
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: item.color.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Icon(item.icon, color: item.color, size: 22),
+        if (featured.isEmpty && isLoading)
+          const _RailSkeleton()
+        else if (featured.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: _gutter),
+            child: _EmptyLibraryCard(
+              onAdd: () => _showAddVideoSheet(context),
             ),
-            const SizedBox(height: 8),
-            Text(
-              item.label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: tt.labelMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: cs.onSurface,
-              ),
-            ),
-          ],
+          )
+        else
+          _VideoRail(videos: featured),
+        const SizedBox(height: 28),
+      ],
+    );
+  }
+}
+
+class _TrendingSection extends StatelessWidget {
+  const _TrendingSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final trending =
+        context.select<VideoProvider, List<VideoItem>>((v) => v.trendingVideos);
+    final isLoading = context.select<VideoProvider, bool>((v) => v.isLoading);
+    final scope = HomeScope.of(context);
+
+    if (trending.isEmpty && isLoading) {
+      return Column(
+        children: const [
+          _SectionHeader(title: 'В тренде', icon: Icons.trending_up_rounded),
+          _ListSkeleton(),
+          SizedBox(height: 20),
+        ],
+      );
+    }
+    if (trending.isEmpty) return const SizedBox.shrink();
+
+    final items = trending.take(5).toList(growable: false);
+
+    return Column(
+      children: [
+        _SectionHeader(
+          title: 'В тренде',
+          icon: Icons.trending_up_rounded,
+          actionLabel: 'Все',
+          onAction: () => scope.openTab(HomeTab.videos),
         ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: _gutter),
+          child: Column(
+            children: [
+              for (final video in items)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: VideoCard(
+                    video: video,
+                    onTap: () => _openPlayer(context, video),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+}
+
+class _VideoRail extends StatelessWidget {
+  const _VideoRail({required this.videos});
+
+  final List<VideoItem> videos;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: _railHeight,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        clipBehavior: Clip.none,
+        padding: const EdgeInsets.symmetric(horizontal: _gutter),
+        itemCount: videos.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (context, index) {
+          final video = videos[index];
+          return SizedBox(
+            width: _railItemWidth,
+            child: VideoCard(
+              video: video,
+              onTap: () => _openPlayer(context, video),
+            ),
+          );
+        },
       ),
     );
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//                      SECTION HEADER
-// ═══════════════════════════════════════════════════════════════
-class _SectionHeader extends StatelessWidget {
-  final String title;
-  final IconData? icon;
-  final VoidCallback? onSeeAll;
+void _openPlayer(BuildContext context, VideoItem video) {
+  Navigator.of(context).push(
+    MaterialPageRoute(builder: (_) => PlayerScreen(video: video)),
+  );
+}
 
+// ── Заголовок секции ────────────────────────────────────────────────────
+
+class _SectionHeader extends StatelessWidget {
   const _SectionHeader({
     required this.title,
     this.icon,
-    this.onSeeAll,
+    this.actionLabel,
+    this.onAction,
   });
+
+  final String title;
+  final IconData? icon;
+  final String? actionLabel;
+  final VoidCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
+    final theme = Theme.of(context);
+    final palette = _HomePalette.of(context);
+    final hasAction = actionLabel != null && onAction != null;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+      padding: EdgeInsets.fromLTRB(_gutter, 0, hasAction ? 10 : _gutter, 12),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           if (icon != null) ...[
             Container(
-              width: 32,
-              height: 32,
+              width: 30,
+              height: 30,
               decoration: BoxDecoration(
-                color: cs.primaryContainer,
+                color: palette.iconChip,
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(icon, size: 18, color: cs.onPrimaryContainer),
+              child: Icon(icon, size: 17, color: palette.iconChipForeground),
             ),
             const SizedBox(width: 10),
           ],
           Expanded(
             child: Text(
               title,
-              style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+              style: theme.textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
           ),
-          if (onSeeAll != null)
+          if (hasAction)
             TextButton(
-              onPressed: onSeeAll,
+              onPressed: onAction,
               style: TextButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('Все', style: tt.labelLarge?.copyWith(color: cs.primary)),
-                  const SizedBox(width: 2),
-                  Icon(Icons.chevron_right_rounded, size: 18, color: cs.primary),
-                ],
-              ),
+              child: Text(actionLabel!),
             ),
         ],
       ),
@@ -1230,90 +1079,184 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//                  EMPTY VIDEOS / ADD BANNER
-// ═══════════════════════════════════════════════════════════════
-class _EmptyVideosCard extends StatelessWidget {
+// ── Пустые состояния и скелетоны ────────────────────────────────────────
+
+class _EmptyLibraryCard extends StatelessWidget {
+  const _EmptyLibraryCard({required this.onAdd});
+
+  final VoidCallback onAdd;
+
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
+    final theme = Theme.of(context);
+    final palette = _HomePalette.of(context);
 
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.3)),
+        color: palette.cardSurface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: palette.cardBorder),
       ),
       child: Column(
         children: [
           Container(
-            width: 72,
-            height: 72,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
-              color: cs.primaryContainer.withOpacity(0.5),
-              borderRadius: BorderRadius.circular(24),
+              color: _Accent.violet.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(18),
             ),
-            child: Icon(Icons.video_library_outlined,
-                size: 36, color: cs.onPrimaryContainer),
+            child: const Icon(
+              Icons.video_library_outlined,
+              size: 26,
+              color: _Accent.violet,
+            ),
           ),
           const SizedBox(height: 14),
-          Text('Нет видео', style: tt.titleMedium),
+          Text(
+            'Здесь появятся подборки',
+            style: theme.textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 4),
-          Text('Добавьте YouTube-ссылку, чтобы начать обучение',
-              style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
-              textAlign: TextAlign.center),
+          Text(
+            'Добавьте первое видео — приложение подберёт похожие '
+            'и соберёт из них словарь',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: palette.onSurfaceMuted),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.tonalIcon(
+            onPressed: onAdd,
+            icon: const Icon(Icons.add_rounded, size: 20),
+            label: const Text('Добавить видео'),
+          ),
         ],
       ),
     );
   }
 }
 
-class _AddVideoBanner extends StatelessWidget {
-  final VoidCallback onTap;
-  const _AddVideoBanner({required this.onTap});
+class _RailSkeleton extends StatelessWidget {
+  const _RailSkeleton();
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
+    return SizedBox(
+      height: _railHeight,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: _gutter),
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: 3,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (_, __) => const _SkeletonBox(
+          width: _railItemWidth,
+          height: _railHeight,
+        ),
+      ),
+    );
+  }
+}
+
+class _ListSkeleton extends StatelessWidget {
+  const _ListSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(horizontal: _gutter),
+      child: Column(
+        children: [
+          _SkeletonBox(height: 96),
+          SizedBox(height: 12),
+          _SkeletonBox(height: 96),
+        ],
+      ),
+    );
+  }
+}
+
+class _SkeletonBox extends StatelessWidget {
+  const _SkeletonBox({this.width, required this.height});
+
+  final double? width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = _HomePalette.of(context);
+
+    return Container(
+      width: width ?? double.infinity,
+      height: height,
+      decoration: BoxDecoration(
+        color: palette.cardSurface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: palette.cardBorder),
+      ),
+    )
+        .animate(onPlay: (c) => c.repeat(reverse: true))
+        .fadeIn(duration: 700.ms, begin: 0.45);
+  }
+}
+
+// ── CTA «Добавить видео» ────────────────────────────────────────────────
+
+class _AddVideoBanner extends StatelessWidget {
+  const _AddVideoBanner({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final palette = _HomePalette.of(context);
 
     return InkWell(
-      borderRadius: BorderRadius.circular(24),
+      borderRadius: BorderRadius.circular(22),
       onTap: onTap,
-      child: DottedBorder(
-        color: cs.primary.withOpacity(0.5),
-        radius: 24,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 18),
+      child: CustomPaint(
+        painter: _DashedBorderPainter(
+          color: cs.primary.withValues(alpha: 0.45),
+          radius: 22,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
           child: Row(
             children: [
               Container(
-                width: 48,
-                height: 48,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
-                  color: cs.primaryContainer,
-                  borderRadius: BorderRadius.circular(16),
+                  color: cs.primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                child:
-                    Icon(Icons.add_rounded, color: cs.primary, size: 26),
+                child: Icon(Icons.add_rounded, color: cs.primary, size: 24),
               ),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Добавить своё видео',
-                        style: tt.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700)),
-                    Text('YouTube-ссылка или прямой .mp4',
-                        style: tt.bodySmall
-                            ?.copyWith(color: cs.onSurfaceVariant)),
+                    Text(
+                      'Своё видео',
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Ссылка на YouTube или прямой .mp4 / .m3u8',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: palette.onSurfaceMuted),
+                    ),
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right_rounded, color: cs.primary),
+              Icon(Icons.chevron_right_rounded, color: palette.hint),
             ],
           ),
         ),
@@ -1322,31 +1265,11 @@ class _AddVideoBanner extends StatelessWidget {
   }
 }
 
-/// Простая dashed-обводка через CustomPaint (без зависимостей).
-class DottedBorder extends StatelessWidget {
-  final Widget child;
+class _DashedBorderPainter extends CustomPainter {
+  const _DashedBorderPainter({required this.color, required this.radius});
+
   final Color color;
   final double radius;
-  const DottedBorder({
-    super.key,
-    required this.child,
-    required this.color,
-    this.radius = 16,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _DottedPainter(color: color, radius: radius),
-      child: child,
-    );
-  }
-}
-
-class _DottedPainter extends CustomPainter {
-  final Color color;
-  final double radius;
-  _DottedPainter({required this.color, required this.radius});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1355,26 +1278,271 @@ class _DottedPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
 
-    final rect = RRect.fromRectAndRadius(
-      Offset.zero & size,
-      Radius.circular(radius),
-    );
-    final path = Path()..addRRect(rect);
+    final path = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(
+          Offset.zero & size,
+          Radius.circular(radius),
+        ),
+      );
 
-    const dashLen = 6.0;
-    const gapLen = 4.0;
+    const dash = 6.0;
+    const gap = 5.0;
 
     for (final metric in path.computeMetrics()) {
-      double dist = 0;
-      while (dist < metric.length) {
-        final next = (dist + dashLen).clamp(0, metric.length).toDouble();
-        canvas.drawPath(metric.extractPath(dist, next), paint);
-        dist = next + gapLen;
+      var distance = 0.0;
+      while (distance < metric.length) {
+        final end = (distance + dash).clamp(0.0, metric.length);
+        canvas.drawPath(metric.extractPath(distance, end), paint);
+        distance = end + gap;
       }
     }
   }
 
   @override
-  bool shouldRepaint(covariant _DottedPainter oldDelegate) =>
+  bool shouldRepaint(_DashedBorderPainter oldDelegate) =>
       oldDelegate.color != color || oldDelegate.radius != radius;
+}
+
+// ── Импорт видео ────────────────────────────────────────────────────────
+
+enum _VideoSource { youtube, direct, vidApi }
+
+_VideoSource _detectSource(String raw) {
+  final value = raw.trim().toLowerCase();
+  if (value.contains('vidapi.xyz') || value.startsWith('tt')) {
+    return _VideoSource.vidApi;
+  }
+  if (value.contains('youtube.com') || value.contains('youtu.be')) {
+    return _VideoSource.youtube;
+  }
+  if (value.endsWith('.mp4') ||
+      value.endsWith('.m3u8') ||
+      value.startsWith('http')) {
+    return _VideoSource.direct;
+  }
+  return _VideoSource.youtube;
+}
+
+Future<void> _showAddVideoSheet(BuildContext context) async {
+  final video = await showModalBottomSheet<VideoItem>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    builder: (_) => const _AddVideoSheet(),
+  );
+
+  if (video == null || !context.mounted) return;
+  _openPlayer(context, video);
+}
+
+class _AddVideoSheet extends StatefulWidget {
+  const _AddVideoSheet();
+
+  @override
+  State<_AddVideoSheet> createState() => _AddVideoSheetState();
+}
+
+class _AddVideoSheetState extends State<_AddVideoSheet> {
+  final TextEditingController _controller = TextEditingController();
+  bool _isBusy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final raw = _controller.text.trim();
+    if (raw.isEmpty) {
+      setState(() => _error = 'Вставьте ссылку на видео');
+      return;
+    }
+
+    setState(() {
+      _isBusy = true;
+      _error = null;
+    });
+
+    final videos = context.read<VideoProvider>();
+    VideoItem? video;
+    try {
+      video = switch (_detectSource(raw)) {
+        _VideoSource.vidApi => await videos.importVidApiVideo(raw),
+        _VideoSource.direct => await videos.importCustomVideo(raw),
+        _VideoSource.youtube => await videos.importYouTubeVideo(raw),
+      };
+    } catch (_) {
+      video = null;
+    }
+
+    if (!mounted) return;
+
+    if (video == null) {
+      setState(() {
+        _isBusy = false;
+        _error = 'Не удалось загрузить видео. Проверьте ссылку.';
+      });
+      return;
+    }
+
+    Navigator.of(context).pop(video);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        24,
+        4,
+        24,
+        MediaQuery.viewInsetsOf(context).bottom + 24,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Добавить видео',
+            style: theme.textTheme.titleLarge
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Поддерживаются ссылки YouTube и прямые файлы .mp4 / .m3u8',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 18),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            enabled: !_isBusy,
+            autocorrect: false,
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _submit(),
+            decoration: InputDecoration(
+              labelText: 'Ссылка',
+              hintText: 'https://…',
+              errorText: _error,
+              prefixIcon: const Icon(Icons.link_rounded),
+            ),
+          ),
+          const SizedBox(height: 18),
+          FilledButton(
+            onPressed: _isBusy ? null : _submit,
+            child: _isBusy
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Импортировать и смотреть'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Палитра и утилиты ───────────────────────────────────────────────────
+
+/// Все решения «светлая / тёмная тема» собраны в одном месте,
+/// чтобы виджеты не разъезжались по стилю.
+@immutable
+class _HomePalette {
+  const _HomePalette({
+    required this.accent,
+    required this.heroSurface,
+    required this.heroSurfaceAlt,
+    required this.heroBorder,
+    required this.heroLayer,
+    required this.heroForeground,
+    required this.heroForegroundMuted,
+    required this.ringTrack,
+    required this.cardSurface,
+    required this.cardBorder,
+    required this.onSurface,
+    required this.onSurfaceMuted,
+    required this.hint,
+    required this.iconChip,
+    required this.iconChipForeground,
+  });
+
+  final Color accent;
+  final Color heroSurface;
+  final Color heroSurfaceAlt;
+  final Color heroBorder;
+  final Color heroLayer;
+  final Color heroForeground;
+  final Color heroForegroundMuted;
+  final Color ringTrack;
+  final Color cardSurface;
+  final Color cardBorder;
+  final Color onSurface;
+  final Color onSurfaceMuted;
+  final Color hint;
+  final Color iconChip;
+  final Color iconChipForeground;
+
+  factory _HomePalette.of(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    if (theme.brightness == Brightness.dark) {
+      return _HomePalette(
+        accent: _Accent.violet,
+        heroSurface: const Color(0xFF1C1B22),
+        heroSurfaceAlt: const Color(0xFF141318),
+        heroBorder: Colors.white.withValues(alpha: 0.08),
+        heroLayer: Colors.white.withValues(alpha: 0.10),
+        heroForeground: Colors.white,
+        heroForegroundMuted: Colors.white.withValues(alpha: 0.62),
+        ringTrack: Colors.white.withValues(alpha: 0.12),
+        cardSurface: const Color(0xFF16151C),
+        cardBorder: Colors.white.withValues(alpha: 0.07),
+        onSurface: Colors.white,
+        onSurfaceMuted: Colors.white.withValues(alpha: 0.60),
+        hint: Colors.white.withValues(alpha: 0.32),
+        iconChip: Colors.white.withValues(alpha: 0.10),
+        iconChipForeground: Colors.white,
+      );
+    }
+
+    return _HomePalette(
+      accent: cs.primary,
+      heroSurface: cs.primaryContainer,
+      heroSurfaceAlt: Color.alphaBlend(
+        cs.tertiaryContainer.withValues(alpha: 0.55),
+        cs.primaryContainer,
+      ),
+      heroBorder: cs.onPrimaryContainer.withValues(alpha: 0.10),
+      heroLayer: cs.surface.withValues(alpha: 0.55),
+      heroForeground: cs.onPrimaryContainer,
+      heroForegroundMuted: cs.onPrimaryContainer.withValues(alpha: 0.70),
+      ringTrack: cs.primary.withValues(alpha: 0.16),
+      cardSurface: cs.surfaceContainerLow,
+      cardBorder: cs.outlineVariant.withValues(alpha: 0.40),
+      onSurface: cs.onSurface,
+      onSurfaceMuted: cs.onSurfaceVariant,
+      hint: cs.onSurfaceVariant.withValues(alpha: 0.55),
+      iconChip: cs.primaryContainer,
+      iconChipForeground: cs.onPrimaryContainer,
+    );
+  }
+}
+
+/// Русская плюрализация: 1 слово, 2 слова, 5 слов.
+String _plural(int n, String one, String few, String many) {
+  final mod10 = n % 10;
+  final mod100 = n % 100;
+  if (mod10 == 1 && mod100 != 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
 }
