@@ -7,8 +7,16 @@ import '../../models/movie.dart';
 import '../../services/kinopoisk_service.dart';
 import '../../services/archive_org_service.dart';
 import 'movie_detail_screen.dart';
+import 'searxng_video_tab.dart';
 
-enum CatalogSource { kinopoisk, archive }
+/// Источники каталога.
+///
+/// [kinopoisk] и [archive] отдают список [Movie] и рисуются общей
+/// сеткой постеров. [searxng] — метапоиск видео через SearXNG Search API
+/// (https://docs.searxng.org/dev/search_api.html); у него своя выдача,
+/// своя поисковая строка и своя пагинация, поэтому вкладка выносится
+/// в отдельный виджет [SearxngVideoTab].
+enum CatalogSource { kinopoisk, archive, searxng }
 
 class MovieCatalogScreen extends StatefulWidget {
   const MovieCatalogScreen({super.key});
@@ -30,6 +38,10 @@ class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
   Timer? _searchDebounce;
   String _lastSearchQuery = '';
   static const _searchDebounceDuration = Duration(milliseconds: 400);
+
+  /// true — активна вкладка SearXNG: сетка постеров и поисковая строка
+  /// каталога не используются.
+  bool get _isSearxng => _source == CatalogSource.searxng;
 
   void _onSearchChanged(String value) {
     _searchDebounce?.cancel();
@@ -64,6 +76,9 @@ class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
   }
 
   Future<void> _loadTrending() async {
+    // На вкладке SearXNG каталог фильмов не грузим — данные там свои.
+    if (_isSearxng) return;
+
     setState(() {
       _isLoading = true;
       _error = null;
@@ -113,13 +128,39 @@ class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
     }
   }
 
+  void _onSourceChanged(Set<CatalogSource> selection) {
+    final next = selection.first;
+    if (next == _source) return;
+
+    _searchDebounce?.cancel();
+
+    setState(() {
+      _source = next;
+      _searchController.clear();
+      _lastSearchQuery = '';
+    });
+
+    if (next == CatalogSource.searxng) {
+      // Сбрасываем состояние загрузки каталога, чтобы при возврате
+      // на Kinopoisk/Archive не мелькала старая ошибка.
+      setState(() {
+        _isLoading = false;
+        _error = null;
+      });
+      return;
+    }
+
+    _loadTrending();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Movies'),
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(116),
+          // Без поисковой строки каталога панель ниже.
+          preferredSize: Size.fromHeight(_isSearxng ? 56 : 116),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
             child: Column(
@@ -136,69 +177,73 @@ class _MovieCatalogScreenState extends State<MovieCatalogScreen> {
                       label: Text('Archive.org'),
                       icon: Icon(Icons.public),
                     ),
+                    ButtonSegment(
+                      value: CatalogSource.searxng,
+                      label: Text('Видео'),
+                      icon: Icon(Icons.video_library_outlined),
+                    ),
                   ],
                   selected: {_source},
-                  onSelectionChanged: (set) {
-                    setState(() {
-                      _source = set.first;
-                      _searchController.clear();
-                    });
-                    _loadTrending();
-                  },
+                  onSelectionChanged: _onSourceChanged,
                 ),
-                const SizedBox(height: 8),
-                SearchBar(
-                  controller: _searchController,
-                  hintText: 'Search movies...',
-                  onChanged: _onSearchChanged,
-                  onSubmitted: (q) {
-                    _searchDebounce?.cancel();
-                    final trimmed = q.trim();
-                    if (trimmed.isEmpty || trimmed == _lastSearchQuery) {
-                      return;
-                    }
-                    _lastSearchQuery = trimmed;
-                    _searchMovies(trimmed);
-                  },
-                  leading: const Icon(Icons.search),
-                  trailing: [
-                    if (_searchController.text.isNotEmpty)
-                      IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          _searchDebounce?.cancel();
-                          _searchController.clear();
-                          _lastSearchQuery = '';
-                          _loadTrending();
-                        },
-                      ),
-                  ],
-                ),
+                if (!_isSearxng) ...[
+                  const SizedBox(height: 8),
+                  SearchBar(
+                    controller: _searchController,
+                    hintText: 'Search movies...',
+                    onChanged: _onSearchChanged,
+                    onSubmitted: (q) {
+                      _searchDebounce?.cancel();
+                      final trimmed = q.trim();
+                      if (trimmed.isEmpty || trimmed == _lastSearchQuery) {
+                        return;
+                      }
+                      _lastSearchQuery = trimmed;
+                      _searchMovies(trimmed);
+                    },
+                    leading: const Icon(Icons.search),
+                    trailing: [
+                      if (_searchController.text.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            _searchDebounce?.cancel();
+                            _searchController.clear();
+                            _lastSearchQuery = '';
+                            _loadTrending();
+                          },
+                        ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
         ),
       ),
-      body: _isLoading
-          ? _buildShimmerGrid()
-          : _error != null
-              ? _buildError()
-              : _movies.isEmpty
-                  ? _buildEmpty()
-                  : GridView.builder(
-                      padding: const EdgeInsets.all(16),
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        childAspectRatio: 0.7,
-                        mainAxisSpacing: 16,
-                        crossAxisSpacing: 16,
-                      ),
-                      itemCount: _movies.length,
-                      itemBuilder: (context, index) {
-                        final movie = _movies[index];
-                        return _MovieCard(movie: movie);
-                      },
-                    ),
+      body: _isSearxng
+          ? const SearxngVideoTab()
+          : _isLoading
+              ? _buildShimmerGrid()
+              : _error != null
+                  ? _buildError()
+                  : _movies.isEmpty
+                      ? _buildEmpty()
+                      : GridView.builder(
+                          padding: const EdgeInsets.all(16),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            childAspectRatio: 0.7,
+                            mainAxisSpacing: 16,
+                            crossAxisSpacing: 16,
+                          ),
+                          itemCount: _movies.length,
+                          itemBuilder: (context, index) {
+                            final movie = _movies[index];
+                            return _MovieCard(movie: movie);
+                          },
+                        ),
     );
   }
 

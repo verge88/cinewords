@@ -122,7 +122,11 @@ class MovieDetailScreen extends StatelessWidget {
                                   Navigator.push(
                                     context,
                                     MaterialPageRoute(
-                                      builder: (_) => VidsrcPlayerScreen(movie: movie),
+                                      builder: (_) => VidsrcPlayerScreen(
+                                        movie: movie,
+                                        showReplicas: true,
+                                      ),
+
                                     ),
                                   );
                                 }

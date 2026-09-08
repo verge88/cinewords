@@ -866,22 +866,52 @@ class _VidsrcPlayerScreenState extends State<VidsrcPlayerScreen> {
         final currentId = provider.currentEnglishLine?.id;
 
         if (english.isEmpty) {
+          final message = provider.subtitleError ??
+              (
+                widget.movie.tmdbId == null &&
+                widget.movie.imdbId == null
+                    ? 'У фильма отсутствуют TMDB и IMDb ID'
+                    : 'Реплики не найдены в OpenSubtitles'
+              );
+
           return ColoredBox(
             color: const Color(0xFF111111),
             child: Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
-                child: Text(
-                  provider.subtitleError ?? 'Реплики не найдены',
-                  style: const TextStyle(
-                    color: Colors.white70,
-                  ),
-                  textAlign: TextAlign.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.subtitles_off_rounded,
+                      color: Colors.white54,
+                      size: 42,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      message,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        _playerProvider.loadVideo(_video);
+                      },
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: const Text(
+                        'Повторить загрузку',
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
           );
         }
+
 
         return ColoredBox(
           color: const Color(0xFF111111),

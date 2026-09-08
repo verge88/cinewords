@@ -7,6 +7,8 @@ import '../services/supabase_service.dart';
 import '../services/dictionary_service.dart';
 import '../services/open_subtitles_service.dart';
 import '../utils/vtt_parser.dart';
+import 'dart:async';
+
 
 class PlayerProvider extends ChangeNotifier {
   final YouTubeService _ytService = YouTubeService();
@@ -178,157 +180,288 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   /// Загрузка субтитров для фильмов через OpenSubtitles API
-  Future<void> _loadMovieSubtitles(VideoItem video) async {
-    // Извлекаем TMDB ID из video.id (формат: tmdb_movie_{id})
-    final tmdbIdStr = video.youtubeId; // youtubeId хранит TMDB ID для фильмов
-    final tmdbId = int.tryParse(tmdbIdStr);
-    
-    if (tmdbId == null) {
+  Future<void> _loadMovieSubtitles(
+    VideoItem video,
+  ) async {
+    final tmdbId = int.tryParse(
+      video.youtubeId.trim(),
+    );
+
+    final imdbId = video.imdbId?.trim();
+
+    if (tmdbId == null &&
+        (imdbId == null || imdbId.isEmpty)) {
       _isLoadingSubs = false;
-      _subtitleError = 'Invalid movie ID';
+      _subtitleError =
+          'У фильма отсутствуют TMDB и IMDb ID';
       notifyListeners();
       return;
     }
 
-    debugPrint('[MovieSubs] Loading subtitles for TMDB ID: $tmdbId');
+    debugPrint(
+      '[MovieSubs] Loading subtitles: '
+      'TMDB=$tmdbId, IMDb=$imdbId',
+    );
 
-    // Проверяем кэш в Supabase
+    // Кэш английских субтитров.
     try {
-      final cached = await SupabaseService.getSubtitles(video.id, language: 'en')
-          .timeout(const Duration(seconds: 3));
+      final cached = await SupabaseService.getSubtitles(
+        video.id,
+        language: 'en',
+      ).timeout(
+        const Duration(seconds: 3),
+      );
+
       if (cached.isNotEmpty) {
         _englishSubs = cached;
-        debugPrint('[MovieSubs] Loaded ${cached.length} EN subs from cache');
-      }
-    } catch (_) {}
 
-    // Сначала пробуем субтитры, которые отдал стрим-провайдер (Vidzee/Autoembed).
-    if (_englishSubs.isEmpty && video.subtitleUrl != null) {
+        debugPrint(
+          '[MovieSubs] Loaded '
+          '${cached.length} EN lines from cache',
+        );
+      }
+    } catch (error) {
+      debugPrint(
+        '[MovieSubs] EN cache failed: $error',
+      );
+    }
+
+    // Прямой URL от другого провайдера, если он задан.
+    if (_englishSubs.isEmpty &&
+        video.subtitleUrl != null &&
+        video.subtitleUrl!.isNotEmpty) {
       try {
-        final res = await _ytService.client
-            .get(Uri.parse(video.subtitleUrl!))
-            .timeout(const Duration(seconds: 10));
-        if (res.statusCode == 200) {
+        final response = await _ytService.client
+            .get(
+              Uri.parse(video.subtitleUrl!),
+            )
+            .timeout(
+              const Duration(seconds: 15),
+            );
+
+        if (response.statusCode == 200) {
           _englishSubs = VttParser.parse(
-            _decodeSubtitleBody(res.bodyBytes),
+            _decodeSubtitleBody(
+              response.bodyBytes,
+            ),
             video.id,
             'en',
           );
-          debugPrint('[MovieSubs] EN from provider: ${_englishSubs.length} lines');
-          if (_englishSubs.isNotEmpty) {
-            SupabaseService.saveSubtitles(_englishSubs).catchError((_) {});
-          }
+
+          debugPrint(
+            '[MovieSubs] Loaded '
+            '${_englishSubs.length} EN lines '
+            'from direct URL',
+          );
+        } else {
+          debugPrint(
+            '[MovieSubs] Direct EN URL returned '
+            '${response.statusCode}',
+          );
         }
-      } catch (e) {
-        debugPrint('[MovieSubs] Provider EN sub fetch failed: $e');
+      } catch (error) {
+        debugPrint(
+          '[MovieSubs] Direct EN failed: $error',
+        );
       }
     }
 
-    // Фоллбэк — OpenSubtitles по TMDB id.
+    // OpenSubtitles: сначала TMDB, затем IMDb.
     if (_englishSubs.isEmpty) {
       try {
-        final enContent = await OpenSubtitlesService.fetchSubtitle(
+        final content =
+            await OpenSubtitlesService.fetchSubtitle(
           tmdbId: tmdbId,
+          imdbId: imdbId,
           language: 'en',
         );
-        if (enContent != null) {
-          _englishSubs = VttParser.parse(enContent, video.id, 'en');
-          debugPrint('[MovieSubs] Loaded ${_englishSubs.length} EN lines from OpenSubtitles');
-          if (_englishSubs.isNotEmpty) {
-            SupabaseService.saveSubtitles(_englishSubs).catchError((_) {});
-          }
+
+        if (content != null &&
+            content.trim().isNotEmpty) {
+          _englishSubs = VttParser.parse(
+            content,
+            video.id,
+            'en',
+          );
+
+          debugPrint(
+            '[MovieSubs] Loaded '
+            '${_englishSubs.length} EN lines '
+            'from OpenSubtitles',
+          );
         }
-      } catch (e) {
-        debugPrint('[MovieSubs] EN subtitle fetch failed: $e');
+      } catch (error, stackTrace) {
+        debugPrint(
+          '[MovieSubs] EN subtitle fetch failed: '
+          '$error',
+        );
+        debugPrintStack(stackTrace: stackTrace);
       }
     }
 
-    if (_englishSubs.isEmpty) {
-      _subtitleError = 'Subtitles not found';
+    if (_englishSubs.isNotEmpty) {
+      _subtitleError = null;
+
+      SupabaseService.saveSubtitles(
+        _englishSubs,
+      ).catchError((_) {});
+    } else {
+      _subtitleError =
+          'Английские реплики для этого фильма не найдены';
     }
 
     _isLoadingSubs = false;
     notifyListeners();
 
-    // Загружаем русские субтитры в фоне
-    _loadMovieRussianSubs(video, tmdbId);
+    // Русскую дорожку загружаем после английской.
+    unawaited(
+      _loadMovieRussianSubs(
+        video,
+        tmdbId,
+        imdbId,
+      ),
+    );
   }
 
+
   /// Загрузка русских субтитров для фильма
-  Future<void> _loadMovieRussianSubs(VideoItem video, int tmdbId) async {
-    // Проверяем кэш
+  Future<void> _loadMovieRussianSubs(
+    VideoItem video,
+    int? tmdbId,
+    String? imdbId,
+  ) async {
+    // Кэш русских субтитров.
     try {
-      final cached = await SupabaseService.getSubtitles(video.id, language: 'ru')
-          .timeout(const Duration(seconds: 3));
+      final cached = await SupabaseService.getSubtitles(
+        video.id,
+        language: 'ru',
+      ).timeout(
+        const Duration(seconds: 3),
+      );
+
       if (cached.isNotEmpty) {
         _russianSubs = cached;
         notifyListeners();
         return;
       }
-    } catch (_) {}
+    } catch (error) {
+      debugPrint(
+        '[MovieSubs] RU cache failed: $error',
+      );
+    }
 
-    // Сначала — RU-сабы от провайдера, если есть
-    if (video.subtitleUrlRu != null) {
+    // Прямая RU-дорожка, если присутствует.
+    if (video.subtitleUrlRu != null &&
+        video.subtitleUrlRu!.isNotEmpty) {
       try {
-        final res = await _ytService.client
-            .get(Uri.parse(video.subtitleUrlRu!))
-            .timeout(const Duration(seconds: 10));
-        if (res.statusCode == 200) {
+        final response = await _ytService.client
+            .get(
+              Uri.parse(video.subtitleUrlRu!),
+            )
+            .timeout(
+              const Duration(seconds: 15),
+            );
+
+        if (response.statusCode == 200) {
           _russianSubs = VttParser.parse(
-            _decodeSubtitleBody(res.bodyBytes),
+            _decodeSubtitleBody(
+              response.bodyBytes,
+            ),
             video.id,
             'ru',
           );
+
           if (_russianSubs.isNotEmpty) {
-            SupabaseService.saveSubtitles(_russianSubs).catchError((_) {});
+            SupabaseService.saveSubtitles(
+              _russianSubs,
+            ).catchError((_) {});
+
             notifyListeners();
             return;
           }
         }
-      } catch (e) {
-        debugPrint('[MovieSubs] Provider RU sub fetch failed: $e');
+      } catch (error) {
+        debugPrint(
+          '[MovieSubs] Direct RU failed: $error',
+        );
       }
     }
 
-    // Фоллбэк — OpenSubtitles
+    // OpenSubtitles: TMDB с fallback на IMDb.
     try {
-      final ruContent = await OpenSubtitlesService.fetchSubtitle(
+      final content =
+          await OpenSubtitlesService.fetchSubtitle(
         tmdbId: tmdbId,
+        imdbId: imdbId,
         language: 'ru',
       );
-      if (ruContent != null) {
-        _russianSubs = VttParser.parse(ruContent, video.id, 'ru');
-        debugPrint('[MovieSubs] Loaded ${_russianSubs.length} RU lines from OpenSubtitles');
+
+      if (content != null &&
+          content.trim().isNotEmpty) {
+        _russianSubs = VttParser.parse(
+          content,
+          video.id,
+          'ru',
+        );
+
+        debugPrint(
+          '[MovieSubs] Loaded '
+          '${_russianSubs.length} RU lines '
+          'from OpenSubtitles',
+        );
+
         if (_russianSubs.isNotEmpty) {
-          SupabaseService.saveSubtitles(_russianSubs).catchError((_) {});
+          SupabaseService.saveSubtitles(
+            _russianSubs,
+          ).catchError((_) {});
+
           notifyListeners();
           return;
         }
       }
-    } catch (e) {
-      debugPrint('[MovieSubs] RU subtitle fetch failed: $e');
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[MovieSubs] RU subtitle fetch failed: '
+        '$error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
     }
 
-    // Фоллбэк: автоперевод английских субтитров
-    if (_englishSubs.isNotEmpty && _russianSubs.isEmpty) {
-      debugPrint('[MovieSubs] No RU subs found. Auto-translating...');
+    // Если русской дорожки нет, переводим английскую.
+    if (_englishSubs.isNotEmpty &&
+        _russianSubs.isEmpty) {
+      debugPrint(
+        '[MovieSubs] RU not found; '
+        'starting automatic translation',
+      );
+
       _isAutoTranslating = true;
       notifyListeners();
 
       try {
-        _russianSubs = await DictionaryService.translateSubtitles(_englishSubs);
-        debugPrint('[MovieSubs] Auto-translated ${_russianSubs.length} lines');
-        if (_russianSubs.isNotEmpty) {
-          SupabaseService.saveSubtitles(_russianSubs).catchError((_) {});
-        }
-      } catch (e) {
-        debugPrint('[MovieSubs] Auto-translation failed: $e');
-      }
+        _russianSubs =
+            await DictionaryService.translateSubtitles(
+          _englishSubs,
+        );
 
-      _isAutoTranslating = false;
-      notifyListeners();
+        if (_russianSubs.isNotEmpty) {
+          SupabaseService.saveSubtitles(
+            _russianSubs,
+          ).catchError((_) {});
+        }
+      } catch (error, stackTrace) {
+        debugPrint(
+          '[MovieSubs] Auto-translation failed: '
+          '$error',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      } finally {
+        _isAutoTranslating = false;
+        notifyListeners();
+      }
     }
   }
+
 
   bool _isAutoTranslating = false;
   bool get isAutoTranslating => _isAutoTranslating;
