@@ -1,20 +1,26 @@
-import 'package:cinewords/screens/catalog/vidsrc_player_screen.dart';
 import 'package:flutter/material.dart';
+
 import '../../models/movie.dart';
 import '../../models/video_item.dart';
 import '../../services/archive_org_service.dart';
 import '../player/player_screen.dart';
+import 'vidsrc_player_screen.dart';
 
 class MoviePlayerScreen extends StatefulWidget {
   final Movie movie;
 
-  const MoviePlayerScreen({super.key, required this.movie});
+  const MoviePlayerScreen({
+    super.key,
+    required this.movie,
+  });
 
   @override
-  State<MoviePlayerScreen> createState() => _MoviePlayerScreenState();
+  State<MoviePlayerScreen> createState() =>
+      _MoviePlayerScreenState();
 }
 
-class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
+class _MoviePlayerScreenState
+    extends State<MoviePlayerScreen> {
   final ArchiveOrgService _archive = ArchiveOrgService();
 
   VideoItem? _video;
@@ -24,43 +30,62 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   void initState() {
     super.initState();
 
+    // Для Archive.org нужен прямой URL, поэтому сначала
+    // резолвим информацию о потоке.
     if (widget.movie.archiveId != null) {
-      _resolve();
+      _resolveArchiveVideo();
     }
   }
 
-
-  Future<void> _resolve() async {
+  Future<void> _resolveArchiveVideo() async {
     try {
-      final v = await _buildVideoItem(widget.movie);
+      final video = await _buildArchiveVideoItem(
+        widget.movie,
+      );
+
       if (!mounted) return;
-      // loadVideo вызовется внутри PlayerScreen._load() с уже обогащёнными
-      // субтитрами от провайдера — здесь дублировать не нужно.
-      setState(() => _video = v);
-    } catch (e) {
+
+      setState(() {
+        _video = video;
+        _error = null;
+      });
+    } catch (error) {
       if (!mounted) return;
-      setState(() => _error = e.toString().replaceAll('Exception: ', ''));
+
+      setState(() {
+        _error = error
+            .toString()
+            .replaceAll('Exception: ', '');
+      });
     }
   }
 
-  Future<VideoItem> _buildVideoItem(Movie movie) async {
-    // Internet Archive — резолвим прямой mp4 + субтитры в файле
-    if (movie.archiveId != null) {
-      final stream = await _archive.resolveStream(movie.archiveId!);
-      return VideoItem(
-        id: 'archive_${movie.archiveId}',
-        youtubeId: '',
-        title: movie.title,
-        sourceType: 'direct',
-        videoUrl: stream.videoUrl,
-        subtitleUrl: stream.subtitleUrl,
-        description: movie.overview,
-        thumbnailUrl: movie.posterUrl,
-        durationSec: 0,
+  Future<VideoItem> _buildArchiveVideoItem(
+    Movie movie,
+  ) async {
+    final archiveId = movie.archiveId;
+
+    if (archiveId == null || archiveId.isEmpty) {
+      throw Exception(
+        'У фильма отсутствует Archive.org ID',
       );
     }
-    // Kinopoisk → vidsrc
-    return movie.toVideoItem();
+
+    final stream = await _archive.resolveStream(
+      archiveId,
+    );
+
+    return VideoItem(
+      id: 'archive_$archiveId',
+      youtubeId: '',
+      title: movie.title,
+      sourceType: 'direct',
+      videoUrl: stream.videoUrl,
+      subtitleUrl: stream.subtitleUrl,
+      description: movie.overview,
+      thumbnailUrl: movie.posterUrl,
+      durationSec: 0,
+    );
   }
 
   @override
@@ -71,11 +96,9 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-        // Для обычных фильмов используем VidSrc как видеодвижок,
-    // а реплики загружаем и отображаем средствами CineWords.
-    //
-    // Archive.org по-прежнему использует оригинальный media_kit-плеер,
-    // потому что там имеется прямой URL видео.
+    // Обычные фильмы:
+    // VidSpark отвечает за воспроизведение,
+    // CineWords загружает и синхронизирует реплики.
     if (widget.movie.archiveId == null) {
       return VidsrcPlayerScreen(
         movie: widget.movie,
@@ -83,25 +106,42 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
       );
     }
 
+    // Archive.org имеет прямой URL потока, поэтому здесь
+    // используется оригинальный media_kit PlayerScreen.
     if (_error != null) {
       return Scaffold(
-        appBar: AppBar(title: Text(widget.movie.title)),
+        appBar: AppBar(
+          title: Text(widget.movie.title),
+        ),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.error_outline, size: 48, color: Colors.grey),
+                const Icon(
+                  Icons.error_outline_rounded,
+                  size: 48,
+                  color: Colors.grey,
+                ),
                 const SizedBox(height: 12),
-                Text(_error!, textAlign: TextAlign.center),
+                Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                ),
                 const SizedBox(height: 16),
-                ElevatedButton(
+                ElevatedButton.icon(
                   onPressed: () {
-                    setState(() => _error = null);
-                    _resolve();
+                    setState(() {
+                      _error = null;
+                    });
+
+                    _resolveArchiveVideo();
                   },
-                  child: const Text('Retry'),
+                  icon: const Icon(
+                    Icons.refresh_rounded,
+                  ),
+                  label: const Text('Повторить'),
                 ),
               ],
             ),
@@ -109,12 +149,20 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
         ),
       );
     }
+
     if (_video == null) {
       return Scaffold(
-        appBar: AppBar(title: Text(widget.movie.title)),
-        body: const Center(child: CircularProgressIndicator()),
+        appBar: AppBar(
+          title: Text(widget.movie.title),
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(),
+        ),
       );
     }
-    return PlayerScreen(video: _video!);
+
+    return PlayerScreen(
+      video: _video!,
+    );
   }
 }

@@ -1,4 +1,5 @@
 import 'package:equatable/equatable.dart';
+
 import 'video_item.dart';
 
 class Movie extends Equatable {
@@ -10,15 +11,21 @@ class Movie extends Equatable {
   final String releaseDate;
   final double voteAverage;
 
-  /// IMDb id (формат `tt1234567`). Нужен для vidsrc и для OpenSubtitles.
+  /// IMDb ID в формате tt1234567.
+  ///
+  /// Используется VidSpark и OpenSubtitles.
   final String? imdbId;
 
-  /// TMDB id. Нужен для OpenSubtitles (там TMDB — основной идентификатор).
+  /// TMDB ID.
+  ///
+  /// Используется как резервный идентификатор VidSpark
+  /// и основной идентификатор для загрузки субтитров.
   final int? tmdbId;
 
-  /// Идентификатор элемента на archive.org (например `night_of_the_living_dead`).
-  /// Если задан — фильм проигрывается напрямую через Internet Archive,
-  /// без vidsrc. Резолвится в URL .mp4 через [ArchiveOrgService.resolveStream].
+  /// Идентификатор фильма на archive.org.
+  ///
+  /// Если указан, фильм воспроизводится через media_kit
+  /// по прямому URL, без VidSpark.
   final String? archiveId;
 
   const Movie({
@@ -34,7 +41,7 @@ class Movie extends Equatable {
     this.archiveId,
   });
 
-  /// Парсинг из ответа kinopoisk.dev (v1.4).
+  /// Парсинг ответа kinopoisk.dev v1.4.
   factory Movie.fromKinopoisk(Map<String, dynamic> json) {
     final rating = json['rating'] as Map<String, dynamic>?;
     final poster = json['poster'] as Map<String, dynamic>?;
@@ -42,9 +49,13 @@ class Movie extends Equatable {
     final externalId = json['externalId'] as Map<String, dynamic>?;
 
     double bestRating() {
-      final kp = (rating?['kp'] as num?)?.toDouble() ?? 0;
-      final imdb = (rating?['imdb'] as num?)?.toDouble() ?? 0;
-      return kp > 0 ? kp : imdb;
+      final kinopoisk =
+          (rating?['kp'] as num?)?.toDouble() ?? 0;
+
+      final imdb =
+          (rating?['imdb'] as num?)?.toDouble() ?? 0;
+
+      return kinopoisk > 0 ? kinopoisk : imdb;
     }
 
     return Movie(
@@ -52,39 +63,72 @@ class Movie extends Equatable {
       title: (json['name'] as String?)?.isNotEmpty == true
           ? json['name'] as String
           : (json['alternativeName'] as String? ?? ''),
-      overview: json['description'] as String? ??
+      overview:
+          json['description'] as String? ??
           json['shortDescription'] as String? ??
           '',
-      posterUrl: (poster?['url'] as String?) ??
-          (poster?['previewUrl'] as String?) ??
+      posterUrl:
+          poster?['url'] as String? ??
+          poster?['previewUrl'] as String? ??
           '',
       backdropUrl:
-          (backdrop?['url'] as String?) ?? (poster?['url'] as String?) ?? '',
-      releaseDate: (json['year']?.toString()) ?? '',
+          backdrop?['url'] as String? ??
+          poster?['url'] as String? ??
+          '',
+      releaseDate: json['year']?.toString() ?? '',
       voteAverage: bestRating(),
       imdbId: externalId?['imdb'] as String?,
       tmdbId: (externalId?['tmdb'] as num?)?.toInt(),
     );
   }
 
-  /// Какой ID отдать в VidSrc. Предпочитаем IMDb, затем TMDB.
-  String get _vidsrcId => imdbId ?? (tmdbId?.toString() ?? '');
+  /// VidSpark поддерживает как IMDb, так и TMDB ID.
+  ///
+  /// IMDb используется в первую очередь.
+  String get _vidSparkId {
+    final imdb = imdbId?.trim();
 
+    if (imdb != null && imdb.isNotEmpty) {
+      return imdb;
+    }
 
-  bool get isPlayable => _vidsrcId.isNotEmpty;
+    return tmdbId?.toString() ?? '';
+  }
+
+  bool get isPlayable {
+    if (archiveId != null && archiveId!.trim().isNotEmpty) {
+      return true;
+    }
+
+    return _vidSparkId.isNotEmpty;
+  }
 
   VideoItem toVideoItem() {
+    final vidSparkId = _vidSparkId;
+
     return VideoItem(
       id: 'kp_movie_$id',
-      // Для OpenSubtitles нужен TMDB id — кладём его в youtubeId
-      // (player_provider читает оттуда).
+
+      // PlayerProvider использует это поле как TMDB ID
+      // при загрузке субтитров фильма.
       youtubeId: tmdbId?.toString() ?? '',
+
       imdbId: imdbId,
       title: title,
+
+      // Оставляем vidapi для совместимости с PlayerProvider:
+      // при таком sourceType загружаются субтитры фильма.
       sourceType: 'vidapi',
-      // videoUrl используется как первичный embed URL (на случай отображения
-      // ссылки или фоллбэка). Реальный поток вытащит VidsrcExtractor.
-      videoUrl: 'https://vidsrcme.ru/embed/movie/$_vidsrcId',
+
+      videoUrl: vidSparkId.isEmpty
+          ? null
+          : Uri.https(
+              'vidspark.to',
+              '/movie/$vidSparkId',
+              const {
+                'theme': '7C3AED',
+              },
+            ).toString(),
 
       description: overview,
       thumbnailUrl: posterUrl,
@@ -93,5 +137,11 @@ class Movie extends Equatable {
   }
 
   @override
-  List<Object?> get props => [id, title];
+  List<Object?> get props => [
+        id,
+        title,
+        imdbId,
+        tmdbId,
+        archiveId,
+      ];
 }
