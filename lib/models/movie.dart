@@ -67,9 +67,9 @@ class Movie extends Equatable {
     );
   }
 
-  /// Какой ID отдать в vidsrc.to. Предпочитаем IMDb (стабильнее), потом TMDB.
-  String get _vidsrcId =>
-      imdbId ?? (tmdbId?.toString() ?? '');
+  /// Какой ID отдать в VidSrc. Предпочитаем IMDb, затем TMDB.
+  String get _vidsrcId => imdbId ?? (tmdbId?.toString() ?? '');
+
 
   bool get isPlayable => _vidsrcId.isNotEmpty;
 
@@ -84,9 +84,8 @@ class Movie extends Equatable {
       sourceType: 'vidapi',
       // videoUrl используется как первичный embed URL (на случай отображения
       // ссылки или фоллбэка). Реальный поток вытащит VidsrcExtractor.
-      videoUrl: imdbId != null
-          ? 'https://vidsrc.xyz/embed/movie?imdb=$imdbId'
-          : 'https://vidsrc.xyz/embed/movie?tmdb=$_vidsrcId',
+      videoUrl: 'https://vidsrcme.ru/embed/movie/$_vidsrcId',
+
       description: overview,
       thumbnailUrl: posterUrl,
       durationSec: 0,
