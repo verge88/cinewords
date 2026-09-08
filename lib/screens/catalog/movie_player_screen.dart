@@ -1,3 +1,4 @@
+import 'package:cinewords/screens/catalog/vidsrc_player_screen.dart';
 import 'package:flutter/material.dart';
 import '../../models/movie.dart';
 import '../../models/video_item.dart';
@@ -22,8 +23,12 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _resolve();
+
+    if (widget.movie.archiveId != null) {
+      _resolve();
+    }
   }
+
 
   Future<void> _resolve() async {
     try {
@@ -66,6 +71,18 @@ class _MoviePlayerScreenState extends State<MoviePlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
+        // Для обычных фильмов используем VidSrc как видеодвижок,
+    // а реплики загружаем и отображаем средствами CineWords.
+    //
+    // Archive.org по-прежнему использует оригинальный media_kit-плеер,
+    // потому что там имеется прямой URL видео.
+    if (widget.movie.archiveId == null) {
+      return VidsrcPlayerScreen(
+        movie: widget.movie,
+        showReplicas: true,
+      );
+    }
+
     if (_error != null) {
       return Scaffold(
         appBar: AppBar(title: Text(widget.movie.title)),
