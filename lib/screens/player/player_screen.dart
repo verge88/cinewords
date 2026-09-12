@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -50,12 +52,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _isExtracting = false;
   String? _error;
   bool _showSubList = false;
-  bool _isChangingQuality = false;
+
+  /// Смена разрешения. Именно ValueNotifier, а не поле + setState: полноэкранный
+  /// роут строится один раз, и через setState родителя он бы не обновился.
+  final ValueNotifier<bool> _changingQuality = ValueNotifier<bool>(false);
+
   int _qualityRequestId = 0;
+
+  /// Открыт ли собственный полноэкранный роут (защита от двойного push).
+  bool _fullscreenRouteOpen = false;
 
   String? _currentMediaUrl;
   Map<String, String>? _currentMediaHeaders;
-
 
   final Stopwatch _watchStopwatch = Stopwatch();
 
@@ -94,11 +102,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
       // При смене media source backend может временно отправить ошибку
       // старого потока. Не переводим весь экран в состояние ошибки.
-      if (mounted && error.isNotEmpty && !_isChangingQuality) {
+      if (mounted && error.isNotEmpty && !_changingQuality.value) {
         setState(() => _error = 'Playback error: $error');
       }
     }));
-
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
@@ -116,6 +123,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     for (final s in _subs) {
       s.cancel();
     }
+    _changingQuality.dispose();
     _player.dispose();
     _streamService.dispose();
     super.dispose();
@@ -124,138 +132,131 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // ──────────────────────────────── loading ────────────────────────────────
 
   Future<void> _load() async {
-  if (!mounted) return;
-
-  setState(() {
-    _loading = true;
-    _error = null;
-  });
-
-  try {
-    String url;
-    Map<String, String>? headers;
-    VideoItem effectiveVideo = widget.video;
-
-    if (widget.video.sourceType == 'vidapi') {
-      debugPrint(
-        '[Player] Resolving stream via MovieStreamService...',
-      );
-
-      if (mounted) {
-        setState(() => _isExtracting = true);
-      }
-
-      final tmdbId = int.tryParse(widget.video.youtubeId);
-
-      if (tmdbId == null) {
-        throw Exception('У фильма отсутствует TMDB id');
-      }
-
-      final stream = await MovieStreamService.fetchStream(
-        tmdbId: tmdbId,
-        imdbId: widget.video.imdbId,
-      );
-
-      if (!mounted) return;
-
-      setState(() => _isExtracting = false);
-
-      if (stream == null) {
-        throw Exception(
-          'Не удалось получить поток фильма. '
-          'Возможно, он недоступен у Rivestream-провайдеров.',
-        );
-      }
-
-      url = stream.url;
-      headers = stream.headers;
-
-      _pp.setAvailableQualities(
-        stream.qualities
-            .map((quality) => quality.quality)
-            .where((quality) => quality != 'Auto')
-            .toSet()
-            .toList(),
-      );
-
-      final enSubtitle = stream.subtitleFor('en');
-      final ruSubtitle = stream.subtitleFor('ru');
-
-      effectiveVideo = widget.video.copyWith(
-        subtitleUrl: enSubtitle?.url,
-        subtitleUrlRu: ruSubtitle?.url,
-      );
-    } else if (widget.video.sourceType == 'direct' &&
-        widget.video.videoUrl != null) {
-      url = widget.video.videoUrl!;
-      _pp.setAvailableQualities(const []);
-    } else {
-      debugPrint(
-        '[Player] Getting stream for ${widget.video.youtubeId}...',
-      );
-
-      final resolution = await _streamService.resolve(
-        widget.video.youtubeId,
-      );
-
-      if (!mounted) return;
-
-      _pp.setAvailableQualities(
-        resolution.qualities
-            .where((quality) => quality != 'Auto')
-            .toSet()
-            .toList(),
-      );
-
-      url = resolution.url;
-    }
-
-    // Субтитры загружаются параллельно.
-    _pp.loadVideo(effectiveVideo);
-
-    await _player.open(
-      Media(
-        url,
-        httpHeaders: headers,
-      ),
-      play: true,
-    );
-
     if (!mounted) return;
 
-    _currentMediaUrl = url;
-    _currentMediaHeaders = headers;
-
-    // null соответствует Auto в PlayerSettingsSheet.
-    _pp.setSelectedQuality(null);
-
     setState(() {
-      _loading = false;
+      _loading = true;
       _error = null;
     });
-  } catch (e) {
-    debugPrint('[Player] Error loading video: $e');
 
-    if (mounted) {
+    try {
+      String url;
+      Map<String, String>? headers;
+      VideoItem effectiveVideo = widget.video;
+
+      if (widget.video.sourceType == 'vidapi') {
+        debugPrint('[Player] Resolving stream via MovieStreamService...');
+
+        if (mounted) {
+          setState(() => _isExtracting = true);
+        }
+
+        final tmdbId = int.tryParse(widget.video.youtubeId);
+
+        if (tmdbId == null) {
+          throw Exception('У фильма отсутствует TMDB id');
+        }
+
+        final stream = await MovieStreamService.fetchStream(
+          tmdbId: tmdbId,
+          imdbId: widget.video.imdbId,
+        );
+
+        if (!mounted) return;
+
+        setState(() => _isExtracting = false);
+
+        if (stream == null) {
+          throw Exception(
+            'Не удалось получить поток фильма. '
+            'Возможно, он недоступен у Rivestream-провайдеров.',
+          );
+        }
+
+        url = stream.url;
+        headers = stream.headers;
+
+        _pp.setAvailableQualities(
+          stream.qualities
+              .map((quality) => quality.quality)
+              .where((quality) => quality != 'Auto')
+              .toSet()
+              .toList(),
+        );
+
+        final enSubtitle = stream.subtitleFor('en');
+        final ruSubtitle = stream.subtitleFor('ru');
+
+        effectiveVideo = widget.video.copyWith(
+          subtitleUrl: enSubtitle?.url,
+          subtitleUrlRu: ruSubtitle?.url,
+        );
+      } else if (widget.video.sourceType == 'direct' &&
+          widget.video.videoUrl != null) {
+        url = widget.video.videoUrl!;
+        _pp.setAvailableQualities(const []);
+      } else {
+        debugPrint('[Player] Getting stream for ${widget.video.youtubeId}...');
+
+        final resolution = await _streamService.resolve(
+          widget.video.youtubeId,
+        );
+
+        if (!mounted) return;
+
+        _pp.setAvailableQualities(
+          resolution.qualities
+              .where((quality) => quality != 'Auto')
+              .toSet()
+              .toList(),
+        );
+
+        url = resolution.url;
+      }
+
+      // Субтитры загружаются параллельно.
+      _pp.loadVideo(effectiveVideo);
+
+      await _player.open(
+        Media(
+          url,
+          httpHeaders: headers,
+        ),
+        play: true,
+      );
+
+      if (!mounted) return;
+
+      _currentMediaUrl = url;
+      _currentMediaHeaders = headers;
+
+      // null соответствует Auto в PlayerSettingsSheet и в меню кнопки HQ.
+      _pp.setSelectedQuality(null);
+
       setState(() {
         _loading = false;
-        _isExtracting = false;
-        _error = e.toString().replaceAll('Exception: ', '');
+        _error = null;
       });
+    } catch (e) {
+      debugPrint('[Player] Error loading video: $e');
+
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _isExtracting = false;
+          _error = e.toString().replaceAll('Exception: ', '');
+        });
+      }
     }
   }
-}
-
-
 
   Future<void> _changeQuality(String? newQuality) async {
-    if (!mounted || _isChangingQuality) {
+    if (!mounted || _changingQuality.value) {
       return;
     }
 
     // null означает Auto.
-    final requestedQuality =
-        newQuality == 'Auto' ? null : newQuality;
+    final requestedQuality = newQuality == 'Auto' ? null : newQuality;
 
     if (requestedQuality == _pp.selectedQuality) {
       return;
@@ -287,14 +288,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     final requestId = ++_qualityRequestId;
 
-    setState(() {
-      _isChangingQuality = true;
-    });
+    _changingQuality.value = true;
 
     try {
       debugPrint(
-        '[Player] Resolving quality: '
-        '${requestedQuality ?? "Auto"}',
+        '[Player] Resolving quality: ${requestedQuality ?? "Auto"}',
       );
 
       // Сначала получаем новый URL.
@@ -338,9 +336,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       // На некоторых Android-устройствах HLS/muxed backend может
       // проигнорировать start при первой инициализации декодера.
       // Проверяем фактическую позицию и при необходимости повторяем seek.
-      await Future<void>.delayed(
-        const Duration(milliseconds: 350),
-      );
+      await Future<void>.delayed(const Duration(milliseconds: 350));
 
       if (!mounted || requestId != _qualityRequestId) {
         return;
@@ -348,12 +344,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
       final actualPosition = _player.state.position;
 
-      final positionDifference = (actualPosition.inMilliseconds -
-              position.inMilliseconds)
-          .abs();
+      final positionDifference =
+          (actualPosition.inMilliseconds - position.inMilliseconds).abs();
 
-      if (position.inMilliseconds > 1000 &&
-          positionDifference > 2000) {
+      if (position.inMilliseconds > 1000 && positionDifference > 2000) {
         debugPrint(
           '[Player] Position was not restored: '
           'expected=${position.inMilliseconds}, '
@@ -409,13 +403,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
           _currentMediaHeaders = previousHeaders;
         } catch (restoreError) {
           debugPrint(
-            '[Player] Could not restore previous stream: '
-            '$restoreError',
+            '[Player] Could not restore previous stream: $restoreError',
           );
         }
       }
 
-      // Возвращаем прежнее значение радиокнопки.
+      // Возвращаем прежнее значение выбранного качества.
       _pp.setSelectedQuality(previousQuality);
 
       if (mounted) {
@@ -430,13 +423,63 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
     } finally {
       if (mounted && requestId == _qualityRequestId) {
-        setState(() {
-          _isChangingQuality = false;
-        });
+        _changingQuality.value = false;
       }
     }
   }
 
+  // ────────────────────────────── fullscreen ──────────────────────────────
+
+  /// Свой полноэкранный роут вместо `toggleFullscreen` из media_kit_video:
+  /// нам нужно, чтобы видео было отдельным слоем под контролами (иначе
+  /// `Transform.scale` жеста пинча растягивал бы и интерфейс).
+  Future<void> _enterFullscreen() async {
+    if (_fullscreenRouteOpen) return;
+    _fullscreenRouteOpen = true;
+
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+
+    if (!mounted) {
+      _fullscreenRouteOpen = false;
+      return;
+    }
+
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: true,
+        barrierColor: Colors.black,
+        transitionDuration: const Duration(milliseconds: 200),
+        pageBuilder: (routeContext, _, __) => Scaffold(
+          backgroundColor: Colors.black,
+          body: _VideoSurface(
+            player: _player,
+            videoController: _videoController,
+            title: widget.video.title,
+            isFullscreen: true,
+            isChangingQuality: _changingQuality,
+            onQualityChanged: _changeQuality,
+            onSettingsTap: _showSettingsSheet,
+            onWordTap: _onWordTap,
+            onToggleFullscreen: () => Navigator.of(routeContext).maybePop(),
+            onBackTap: () => Navigator.of(routeContext).maybePop(),
+          ),
+        ),
+      ),
+    );
+
+    _fullscreenRouteOpen = false;
+
+    // Зум и режим вписывания держим общими для обоих режимов, но интерфейс
+    // после возврата считаем видимым.
+    _pp.setControlsVisible(true);
+
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+  }
 
   // ──────────────────────────────── actions ────────────────────────────────
 
@@ -553,7 +596,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final pp = context.watch<PlayerProvider>();
-    final fullscreen = isFullscreen(context);
 
     return Scaffold(
       backgroundColor: cs.surface,
@@ -613,7 +655,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             children: [
               AspectRatio(
                 aspectRatio: 16 / 9,
-                child: _buildPlayer(pp, fullscreen),
+                child: _buildPlayer(pp),
               ),
               if (pp.isAutoTranslating) _autoTranslateBanner(cs),
               _SubtitlePanel(
@@ -675,7 +717,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ).animate().fadeIn().slideY();
   }
 
-  Widget _buildPlayer(PlayerProvider pp, bool fullscreen) {
+  Widget _buildPlayer(PlayerProvider pp) {
     if (_loading) {
       final msg = _isExtracting
           ? 'Ищем поток через Rivestream Scraper…'
@@ -711,7 +753,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.error_outline, color: Colors.white70, size: 40),
+                const Icon(Icons.error_outline,
+                    color: Colors.white70, size: 40),
                 const SizedBox(height: 10),
                 Text(
                   _error!,
@@ -750,44 +793,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
     }
 
-    return Video(
-      controller: _videoController,
-      // Tear-off, а не свежее замыкание на каждый build: иначе Video
-      // видит "новые" controls каждый кадр и лишний раз обновляет
-      // videoViewParametersNotifier.
-      controls: _videoControls,
+    return _VideoSurface(
+      player: _player,
+      videoController: _videoController,
+      title: widget.video.title,
+      isFullscreen: false,
+      isChangingQuality: _changingQuality,
+      onQualityChanged: _changeQuality,
+      onSettingsTap: _showSettingsSheet,
+      onWordTap: _onWordTap,
+      onToggleFullscreen: _enterFullscreen,
+      onBackTap: () => Navigator.of(context).maybePop(),
     );
   }
-/// Контролы плеера. Контекст берём через [Builder] — он находится ниже
-  /// `FullscreenInheritedWidget`, поэтому `isFullscreen` даёт корректный
-  /// ответ и во врезке, и в полноэкранном роуте.
-  Widget _videoControls(VideoState state) {
-    return Builder(
-      builder: (ctx) {
-        final fs = isFullscreen(ctx);
-        return Stack(
-          children: [
-            Positioned.fill(
-              child: CustomVideoControls(
-                player: _player,
-                title: widget.video.title,
-                isFullscreen: fs,
-                onToggleFullscreen: () => toggleFullscreen(ctx),
-                onSettingsTap: _showSettingsSheet,
-                onBackTap: () => fs
-                    ? exitFullscreen(ctx)
-                    : Navigator.of(ctx).maybePop(),
-              ),
-            ),
-            // Субтитры поверх видео нужны только в fullscreen: во врезке
-            // их показывает широкая панель под плеером.
-            if (fs)
-              _SubtitleOverlay(onWordTap: _onWordTap),
-          ],
-        );
-      },
-    );
-  }
+
   Widget _subList(PlayerProvider pp) {
     final cs = Theme.of(context).colorScheme;
     if (pp.isLoadingSubs) {
@@ -1021,6 +1040,109 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 }
 
+// ──────────────────── видео + контролы + субтитры одним слоем ────────────────
+
+/// Используется и во врезке 16:9, и в собственном полноэкранном роуте.
+///
+/// Видео лежит отдельным слоем под контролами: это позволяет применять
+/// [Transform.scale] (жест пинча) только к картинке, не искажая интерфейс.
+/// Субтитры — средний слой, он поднимается при появлении контролов.
+class _VideoSurface extends StatelessWidget {
+  const _VideoSurface({
+    required this.player,
+    required this.videoController,
+    required this.title,
+    required this.isFullscreen,
+    required this.isChangingQuality,
+    required this.onQualityChanged,
+    required this.onSettingsTap,
+    required this.onWordTap,
+    required this.onToggleFullscreen,
+    required this.onBackTap,
+  });
+
+  final Player player;
+  final VideoController videoController;
+  final String title;
+  final bool isFullscreen;
+  final ValueListenable<bool> isChangingQuality;
+  final Future<void> Function(String?) onQualityChanged;
+  final VoidCallback onSettingsTap;
+  final void Function(String word, SubtitleLine line) onWordTap;
+  final VoidCallback onToggleFullscreen;
+  final VoidCallback onBackTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final pp = context.watch<PlayerProvider>();
+
+    return ColoredBox(
+      color: Colors.black,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final availableHeight = constraints.maxHeight;
+
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              // 1. Картинка. Масштаб меняется жестом пинча.
+              ClipRect(
+                child: Transform.scale(
+                  scale: pp.videoScale,
+                  filterQuality: FilterQuality.medium,
+                  child: Video(
+                    controller: videoController,
+                    controls: NoVideoControls,
+                    fit: pp.videoFit,
+                    fill: Colors.black,
+                    // Свои субтитры рисуем сами — встроенный слой отключаем.
+                    subtitleViewConfiguration:
+                        const SubtitleViewConfiguration(visible: false),
+                  ),
+                ),
+              ),
+
+              // 2. Субтитры: поднимаются вместе с интерфейсом и плавно
+              //    опускаются, когда он скрывается.
+              _SubtitleOverlay(
+                onWordTap: onWordTap,
+                availableHeight: availableHeight,
+              ),
+
+              // 3. Контролы. Перерисовываются при смене разрешения.
+              Positioned.fill(
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: isChangingQuality,
+                  builder: (context, changing, _) {
+                    return CustomVideoControls(
+                      player: player,
+                      title: title,
+                      isFullscreen: isFullscreen,
+                      onToggleFullscreen: onToggleFullscreen,
+                      onSettingsTap: onSettingsTap,
+                      onBackTap: onBackTap,
+                      qualities: pp.availableQualities,
+                      selectedQuality: pp.selectedQuality,
+                      onQualityChanged: onQualityChanged,
+                      isChangingQuality: changing,
+                      subtitlesEnabled: pp.onVideoSubtitlesEnabled,
+                      onToggleSubtitles: pp.toggleOnVideoSubtitles,
+                      videoScale: pp.videoScale,
+                      onVideoScaleChanged: pp.setVideoScale,
+                      onVideoScaleReset: pp.resetVideoScale,
+                      onVisibilityChanged: pp.setControlsVisible,
+                    );
+                  },
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
 // ─────────────────────────── панель реплик (full width) ───────────────────────
 
 /// Панель текущей реплики. Занимает всю ширину плеера, без внутренних кнопок —
@@ -1105,12 +1227,22 @@ class _SubtitlePanel extends StatelessWidget {
   }
 }
 
-// ─────────────────────── субтитры поверх видео (fullscreen) ──────────────────
+// ─────────────────────── субтитры поверх видео ──────────────────────
 
+/// Пока интерфейс плеера на экране, строка поднимается на
+/// [PlayerProvider.controlsSubtitleLift] пикселей и не прячется за
+/// прогресс-баром; после автоскрытия контролов — плавно опускается назад.
 class _SubtitleOverlay extends StatelessWidget {
   final void Function(String word, SubtitleLine line) onWordTap;
 
-  const _SubtitleOverlay({required this.onWordTap});
+  /// Высота области видео: нужна, чтобы поднятая строка не улетела
+  /// за верхнюю границу маленькой врезки 16:9.
+  final double availableHeight;
+
+  const _SubtitleOverlay({
+    required this.onWordTap,
+    required this.availableHeight,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1122,13 +1254,24 @@ class _SubtitleOverlay extends StatelessWidget {
         final ru = pp.currentRussianLine;
         if (en == null && ru == null) return const SizedBox.shrink();
 
-        final scale = pp.subtitleScale;
+        // Во врезке текст делаем компактнее — там всего ~200 px высоты.
+        final isCompact = availableHeight < 280;
+        final scale = pp.subtitleScale * (isCompact ? 0.7 : 1.0);
+
+        final limit = availableHeight.isFinite && availableHeight > 0
+            ? availableHeight * 0.6
+            : double.infinity;
+        final bottom =
+            pp.effectiveSubtitleBottomPadding.clamp(8.0, limit).toDouble();
+
         final translation = ru?.text ?? en?.translation;
 
-        return Positioned(
+        return AnimatedPositioned(
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
           left: 16,
           right: 16,
-          bottom: pp.subtitleBottomPadding,
+          bottom: bottom,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1178,7 +1321,6 @@ class _SubtitleOverlay extends StatelessWidget {
     );
   }
 }
-
 
 class _OverlayTextWrapper extends StatelessWidget {
   final Widget child;

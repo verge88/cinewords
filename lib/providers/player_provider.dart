@@ -546,6 +546,10 @@ class PlayerProvider extends ChangeNotifier {
   /// субтитры, позицию и последнюю реплику предыдущего видео, пока загружается
   /// новый видеопоток.
   void prepareVideo(VideoItem video, {bool notify = true, bool resetQualities = true}) {
+    _videoScale = 1.0;
+    _videoFit = BoxFit.contain;
+    _controlsVisible = true;
+
     _currentVideo = video;
 
     _englishSubs = [];
@@ -700,6 +704,58 @@ class PlayerProvider extends ChangeNotifier {
       debugPrint('[PlayerProvider] Failed to load subs from URL: $e');
     }
   }
+
+    // ─────────────────── масштаб видео и видимость интерфейса ───────────────────
+
+  static const double minVideoScale = 1.0;
+  static const double maxVideoScale = 3.0;
+
+  /// На сколько субтитры поднимаются, пока виден интерфейс плеера.
+  static const double controlsSubtitleLift = 96.0;
+
+  double _videoScale = 1.0;
+  BoxFit _videoFit = BoxFit.contain;
+  bool _controlsVisible = true;
+
+  double get videoScale => _videoScale;
+  BoxFit get videoFit => _videoFit;
+  bool get controlsVisible => _controlsVisible;
+
+  /// Фактический нижний отступ субтитров: пока контролы на экране, строка
+  /// поднимается над прогресс-баром, после автоскрытия — плавно опускается.
+  double get effectiveSubtitleBottomPadding =>
+      _subtitleBottomPadding + (_controlsVisible ? controlsSubtitleLift : 0);
+
+  void setVideoScale(double scale) {
+    final next = scale.clamp(minVideoScale, maxVideoScale).toDouble();
+    if ((next - _videoScale).abs() < 0.001) return;
+    _videoScale = next;
+    notifyListeners();
+  }
+
+  void resetVideoScale() {
+    if (_videoScale == 1.0 && _videoFit == BoxFit.contain) return;
+    _videoScale = 1.0;
+    _videoFit = BoxFit.contain;
+    notifyListeners();
+  }
+
+  /// Переключение режима вписывания (contain → cover → fill).
+  void cycleVideoFit() {
+    _videoFit = switch (_videoFit) {
+      BoxFit.contain => BoxFit.cover,
+      BoxFit.cover => BoxFit.fill,
+      _ => BoxFit.contain,
+    };
+    notifyListeners();
+  }
+
+  void setControlsVisible(bool visible) {
+    if (_controlsVisible == visible) return;
+    _controlsVisible = visible;
+    notifyListeners();
+  }
+
 
   @override
   void dispose() {

@@ -4,7 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../../models/searx_video.dart';
-import '../../services/searxng_service.dart';
+import '../../services/ddgs_service.dart';
 import '../player/player_screen.dart';
 import 'searx_web_player_screen.dart';
 
@@ -29,7 +29,7 @@ class _SearxngVideoTabState extends State<SearxngVideoTab> {
     ('interview english', 'Интервью'),
   ];
 
-  final SearxngService _searxng = SearxngService();
+  final DdgsService  _searxng = DdgsService();
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
